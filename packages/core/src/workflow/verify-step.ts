@@ -1,10 +1,10 @@
-import type { VerifySummary } from "../models.js";
+import type { PolicyConfig, ScanResult, VerifySummary } from "../models.js";
 import type { VerifierPort } from "../workflow-runner.js";
 
-export function createSkippedVerifySummary(buildSystem: VerifySummary["buildSystem"], reason: string): VerifySummary {
+export function createSkippedVerifySummary(scan: ScanResult, reason: string): VerifySummary {
   return {
-    buildSystem,
-    hasTests: false,
+    buildSystem: scan.buildSystem,
+    hasTests: scan.hasTests,
     compile: { status: "not_run", reason },
     tests: { status: "not_run", reason },
     staticChecks: { status: "not_run", reason }
@@ -13,23 +13,17 @@ export function createSkippedVerifySummary(buildSystem: VerifySummary["buildSyst
 
 export async function runVerifyStep(input: {
   verifier: VerifierPort;
-  scan: { buildSystem: VerifySummary["buildSystem"] } & {
-    hasTests: boolean;
-    metadata: VerifySummary extends infer _ ? never : never;
-  };
+  scan: ScanResult;
   repoPath: string;
-  policy: Parameters<VerifierPort["run"]>[2];
+  policy: PolicyConfig;
   shouldRun: boolean;
 }): Promise<VerifySummary> {
   if (!input.shouldRun) {
-    return {
-      buildSystem: input.scan.buildSystem,
-      hasTests: input.scan.hasTests,
-      compile: { status: "not_run", reason: "verification skipped for plan mode" },
-      tests: { status: "not_run", reason: "verification skipped for plan mode" },
-      staticChecks: { status: "not_run", reason: "verification skipped for plan mode" }
-    };
+    return createSkippedVerifySummary(
+      input.scan,
+      "verification skipped for plan mode"
+    );
   }
 
-  return input.verifier.run(input.scan as any, input.repoPath, input.policy);
+  return input.verifier.run(input.scan, input.repoPath, input.policy);
 }
