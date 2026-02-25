@@ -2,7 +2,31 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { dbPool } from "./client.js";
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolveSleep) => {
+    setTimeout(resolveSleep, ms);
+  });
+}
+
+async function waitForDatabase(maxAttempts: number, delayMs: number): Promise<void> {
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await dbPool.query("select 1");
+      return;
+    } catch (error) {
+      if (attempt === maxAttempts) {
+        throw error;
+      }
+      // eslint-disable-next-line no-console
+      console.log(`Database not ready (attempt ${attempt}/${maxAttempts}), retrying...`);
+      await sleep(delayMs);
+    }
+  }
+}
+
 async function runMigrations(): Promise<void> {
+  await waitForDatabase(15, 1000);
+
   const schemaPath = resolve(process.cwd(), "apps/api/src/db/schema.sql");
   const schemaSql = await readFile(schemaPath, "utf8");
 
