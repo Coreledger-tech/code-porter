@@ -8,10 +8,11 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "npm run db:up && npm run db:migrate && tsx apps/api/src/server.ts",
+    "dev": "npm run db:up && npm run db:migrate && npm run api:start",
+    "api:start": "node --env-file-if-exists=.env --import=tsx apps/api/src/server.ts",
     "db:up": "docker compose up -d postgres",
     "db:down": "docker compose down",
-    "db:migrate": "tsx apps/api/src/db/migrate.ts",
+    "db:migrate": "node --env-file-if-exists=.env --import=tsx apps/api/src/db/migrate.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
