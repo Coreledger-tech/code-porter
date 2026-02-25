@@ -1,0 +1,10 @@
+maxChangeLines: 300
+maxFilesChanged: 10
+requireTestsIfPresent: true
+allowedBuildSystems:
+  - maven
+  - gradle
+  - node
+confidenceThresholds:
+  pass: 70
+  needsReview: 55
