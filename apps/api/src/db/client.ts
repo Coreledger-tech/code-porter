@@ -1,8 +1,11 @@
 import { Pool } from "pg";
 
+const defaultDbPort = process.env.POSTGRES_HOST_PORT ?? "5433";
+const defaultConnectionString = `postgresql://code_porter:code_porter@localhost:${defaultDbPort}/code_porter`;
+
 const connectionString =
   process.env.DATABASE_URL ??
-  "postgresql://code_porter:code_porter@localhost:5432/code_porter";
+  defaultConnectionString;
 
 export const dbPool = new Pool({
   connectionString

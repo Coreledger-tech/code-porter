@@ -1,11 +1,9 @@
-version: "3.9"
-
 services:
   postgres:
     image: postgres:16
     container_name: code-porter-postgres
     ports:
-      - "5432:5432"
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
     environment:
       POSTGRES_DB: code_porter
       POSTGRES_USER: code_porter
