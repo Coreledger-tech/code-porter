@@ -10,6 +10,45 @@ import type {
 
 const TARGET_SUREFIRE_VERSION = "3.2.5";
 
+function updateSinglePluginBlock(
+  pluginBlock: string,
+  recipeId: string,
+  edits: PlannedEdit[],
+  advisories: string[]
+): string {
+  if (!/<artifactId>\s*maven-surefire-plugin\s*<\/artifactId>/.test(pluginBlock)) {
+    return pluginBlock;
+  }
+
+  const versionRegex = /<version>\s*([^<]+)\s*<\/version>/;
+  const match = pluginBlock.match(versionRegex);
+
+  if (!match) {
+    advisories.push(
+      "maven-surefire-plugin exists without <version>; recipe leaves config unchanged for safety"
+    );
+    return pluginBlock;
+  }
+
+  const currentVersion = match[1].trim();
+  if (currentVersion === TARGET_SUREFIRE_VERSION) {
+    advisories.push("maven-surefire-plugin version already aligned");
+    return pluginBlock;
+  }
+
+  edits.push({
+    filePath: "pom.xml",
+    recipeId,
+    description: `Update maven-surefire-plugin version to ${TARGET_SUREFIRE_VERSION}`,
+    lineDelta: 2,
+    changeType: "update",
+    before: `<version>${currentVersion}</version>`,
+    after: `<version>${TARGET_SUREFIRE_VERSION}</version>`
+  });
+
+  return pluginBlock.replace(versionRegex, `<version>${TARGET_SUREFIRE_VERSION}</version>`);
+}
+
 function updateSurefire(content: string, recipeId: string): {
   updated: string;
   edits: PlannedEdit[];
@@ -18,39 +57,28 @@ function updateSurefire(content: string, recipeId: string): {
   const edits: PlannedEdit[] = [];
   const advisories: string[] = [];
 
-  const pluginRegex = /<plugin>[\s\S]*?<artifactId>\s*maven-surefire-plugin\s*<\/artifactId>[\s\S]*?<\/plugin>/g;
+  const pluginBlockRegex = /<plugin>[\s\S]*?<\/plugin>/g;
+  const pluginBlocks = content.match(pluginBlockRegex) ?? [];
 
   let foundPlugin = false;
-  let updated = content.replace(pluginRegex, (pluginBlock) => {
+  let updated = content;
+
+  for (const pluginBlock of pluginBlocks) {
+    if (!/<artifactId>\s*maven-surefire-plugin\s*<\/artifactId>/.test(pluginBlock)) {
+      continue;
+    }
+
     foundPlugin = true;
-    const versionRegex = /<version>\s*([^<]+)\s*<\/version>/;
-    const match = pluginBlock.match(versionRegex);
-
-    if (!match) {
-      advisories.push(
-        "maven-surefire-plugin exists without <version>; recipe leaves config unchanged for safety"
-      );
-      return pluginBlock;
-    }
-
-    const currentVersion = match[1].trim();
-    if (currentVersion === TARGET_SUREFIRE_VERSION) {
-      advisories.push("maven-surefire-plugin version already aligned");
-      return pluginBlock;
-    }
-
-    edits.push({
-      filePath: "pom.xml",
+    const updatedBlock = updateSinglePluginBlock(
+      pluginBlock,
       recipeId,
-      description: `Update maven-surefire-plugin version to ${TARGET_SUREFIRE_VERSION}`,
-      lineDelta: 2,
-      changeType: "update",
-      before: `<version>${currentVersion}</version>`,
-      after: `<version>${TARGET_SUREFIRE_VERSION}</version>`
-    });
-
-    return pluginBlock.replace(versionRegex, `<version>${TARGET_SUREFIRE_VERSION}</version>`);
-  });
+      edits,
+      advisories
+    );
+    if (updatedBlock !== pluginBlock) {
+      updated = updated.replace(pluginBlock, updatedBlock);
+    }
+  }
 
   if (!foundPlugin) {
     advisories.push("maven-surefire-plugin not configured; safe no-op applied");

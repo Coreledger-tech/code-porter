@@ -46,7 +46,12 @@ describe("DefaultRecipeEngine", () => {
 
     expect(updatedPom).toContain("<maven.compiler.source>17</maven.compiler.source>");
     expect(updatedPom).toContain("<maven.compiler.target>17</maven.compiler.target>");
-    expect(updatedPom).toContain("<version>3.2.5</version>");
+    expect(updatedPom).toMatch(
+      /<artifactId>\s*maven-compiler-plugin\s*<\/artifactId>[\s\S]*?<version>\s*3\.8\.1\s*<\/version>/
+    );
+    expect(updatedPom).toMatch(
+      /<artifactId>\s*maven-surefire-plugin\s*<\/artifactId>[\s\S]*?<version>\s*3\.2\.5\s*<\/version>/
+    );
     expect(apply.changes.some((change) => change.changed)).toBe(true);
   });
 

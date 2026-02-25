@@ -48,6 +48,7 @@ export interface PolicyConfig {
   maxFilesChanged: number;
   requireTestsIfPresent: boolean;
   allowedBuildSystems: BuildSystem[];
+  verifyFailureMode: "deny" | "warn";
   confidenceThresholds: {
     pass: number;
     needsReview: number;

@@ -32,6 +32,7 @@ describe("DefaultVerifier", () => {
         maxFilesChanged: 10,
         requireTestsIfPresent: true,
         allowedBuildSystems: ["maven"],
+        verifyFailureMode: "deny",
         confidenceThresholds: {
           pass: 70,
           needsReview: 55

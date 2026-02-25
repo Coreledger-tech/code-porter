@@ -10,6 +10,7 @@ describe("YamlPolicyEngine", () => {
     expect(policy.maxChangeLines).toBe(300);
     expect(policy.maxFilesChanged).toBe(10);
     expect(policy.allowedBuildSystems).toContain("maven");
+    expect(policy.verifyFailureMode).toBe("warn");
     expect(policy.confidenceThresholds.pass).toBe(70);
   });
 
@@ -30,7 +31,7 @@ describe("YamlPolicyEngine", () => {
     expect(decisions.some((decision) => decision.id === "max_change_lines" && decision.status === "deny")).toBe(true);
   });
 
-  it("enforces tests when present", async () => {
+  it("marks verify failures as warnings when verifyFailureMode is warn", async () => {
     const engine = new YamlPolicyEngine();
     const policy = await engine.load(resolve(process.cwd(), "policies/default.yaml"));
 
@@ -38,7 +39,7 @@ describe("YamlPolicyEngine", () => {
       {
         buildSystem: "maven",
         hasTests: true,
-        compile: { status: "passed" },
+        compile: { status: "failed" },
         tests: { status: "not_run", reason: "mvn missing" },
         staticChecks: { status: "passed" }
       },
@@ -48,7 +49,17 @@ describe("YamlPolicyEngine", () => {
     expect(
       decisions.some(
         (decision) =>
-          decision.id === "tests_required_if_present" && decision.status === "deny"
+          decision.id === "compile_must_pass" &&
+          decision.status === "warn" &&
+          decision.blocking === false
+      )
+    ).toBe(true);
+    expect(
+      decisions.some(
+        (decision) =>
+          decision.id === "tests_required_if_present" &&
+          decision.status === "warn" &&
+          decision.blocking === false
       )
     ).toBe(true);
   });

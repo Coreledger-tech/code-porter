@@ -13,6 +13,7 @@ const DEFAULT_POLICY: PolicyConfig = {
   maxFilesChanged: 10,
   requireTestsIfPresent: true,
   allowedBuildSystems: ["maven", "gradle", "node"],
+  verifyFailureMode: "deny",
   confidenceThresholds: {
     pass: 70,
     needsReview: 55
@@ -40,6 +41,16 @@ function asStringArray(value: unknown, fallback: string[]): string[] {
   return fallback;
 }
 
+function asVerifyFailureMode(
+  value: unknown,
+  fallback: PolicyConfig["verifyFailureMode"]
+): PolicyConfig["verifyFailureMode"] {
+  if (value === "deny" || value === "warn") {
+    return value;
+  }
+  return fallback;
+}
+
 function normalizePolicy(raw: unknown): PolicyConfig {
   const config = (raw ?? {}) as Record<string, unknown>;
   const thresholds = (config.confidenceThresholds ?? {}) as Record<string, unknown>;
@@ -57,6 +68,10 @@ function normalizePolicy(raw: unknown): PolicyConfig {
     ).filter((item): item is PolicyConfig["allowedBuildSystems"][number] => {
       return ["maven", "gradle", "node", "unknown"].includes(item);
     }),
+    verifyFailureMode: asVerifyFailureMode(
+      config.verifyFailureMode,
+      DEFAULT_POLICY.verifyFailureMode
+    ),
     confidenceThresholds: {
       pass: asNumber(thresholds.pass, DEFAULT_POLICY.confidenceThresholds.pass),
       needsReview: asNumber(
@@ -136,14 +151,17 @@ export class YamlPolicyEngine implements PolicyEngine {
 
   evaluateVerify(input: VerifySummary, policy: PolicyConfig): PolicyDecision[] {
     const decisions: PolicyDecision[] = [];
+    const shouldWarn = policy.verifyFailureMode === "warn";
+    const failStatus = shouldWarn ? "warn" : "deny";
+    const failBlocking = !shouldWarn;
 
     if (input.compile.status !== "passed") {
       decisions.push({
         id: "compile_must_pass",
         stage: "verify",
-        status: "deny",
+        status: failStatus,
         reason: "Compile/build check did not pass",
-        blocking: true
+        blocking: failBlocking
       });
     } else {
       decisions.push({
@@ -159,9 +177,9 @@ export class YamlPolicyEngine implements PolicyEngine {
       decisions.push({
         id: "tests_required_if_present",
         stage: "verify",
-        status: "deny",
+        status: failStatus,
         reason: "Tests are present and required but did not pass",
-        blocking: true
+        blocking: failBlocking
       });
     } else {
       decisions.push({

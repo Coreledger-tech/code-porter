@@ -5,6 +5,7 @@ allowedBuildSystems:
   - maven
   - gradle
   - node
+verifyFailureMode: warn
 confidenceThresholds:
   pass: 70
   needsReview: 55
