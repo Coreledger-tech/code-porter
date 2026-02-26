@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { ScanResult } from "@code-porter/core/src/models.js";
 import { DefaultRecipeEngine } from "./engine.js";
+import { MavenCompilerPluginBumpRecipe } from "./recipes/maven-compiler-plugin-bump.js";
 import { MavenCompilerTarget17Recipe } from "./recipes/maven-compiler-target17.js";
 import { MavenSurefireSafeRecipe } from "./recipes/maven-surefire-safe.js";
 
@@ -28,6 +29,7 @@ describe("DefaultRecipeEngine", () => {
 
     const engine = new DefaultRecipeEngine([
       new MavenCompilerTarget17Recipe(),
+      new MavenCompilerPluginBumpRecipe(),
       new MavenSurefireSafeRecipe()
     ]);
 
@@ -47,7 +49,7 @@ describe("DefaultRecipeEngine", () => {
     expect(updatedPom).toContain("<maven.compiler.source>17</maven.compiler.source>");
     expect(updatedPom).toContain("<maven.compiler.target>17</maven.compiler.target>");
     expect(updatedPom).toMatch(
-      /<artifactId>\s*maven-compiler-plugin\s*<\/artifactId>[\s\S]*?<version>\s*3\.8\.1\s*<\/version>/
+      /<artifactId>\s*maven-compiler-plugin\s*<\/artifactId>[\s\S]*?<version>\s*3\.11\.0\s*<\/version>/
     );
     expect(updatedPom).toMatch(
       /<artifactId>\s*maven-surefire-plugin\s*<\/artifactId>[\s\S]*?<version>\s*3\.2\.5\s*<\/version>/

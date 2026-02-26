@@ -33,6 +33,16 @@ describe("DefaultVerifier", () => {
         requireTestsIfPresent: true,
         allowedBuildSystems: ["maven"],
         verifyFailureMode: "deny",
+        verify: {
+          blockingFailureKinds: ["code_failure", "unknown"],
+          nonBlockingFailureKinds: ["tool_missing", "artifact_resolution", "repo_unreachable"],
+          retryOnCachedResolution: true,
+          maven: {
+            forceUpdate: true,
+            prefetchPlugins: true,
+            purgeLocalCache: false
+          }
+        },
         confidenceThresholds: {
           pass: 70,
           needsReview: 55
@@ -41,7 +51,9 @@ describe("DefaultVerifier", () => {
     );
 
     expect(result.compile.status).toBe("not_run");
+    expect(result.compile.failureKind).toBe("tool_missing");
     expect(result.tests.status).toBe("not_run");
+    expect(result.tests.failureKind).toBe("tool_missing");
     expect(result.staticChecks.status).toBe("passed");
   });
 });

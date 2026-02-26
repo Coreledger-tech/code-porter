@@ -16,6 +16,7 @@ type MockRes = {
   body?: unknown;
   status: (code: number) => MockRes;
   json: (body: unknown) => MockRes;
+  setHeader: (_name: string, _value: string) => void;
 };
 
 function createMockRes(): MockRes {
@@ -28,6 +29,9 @@ function createMockRes(): MockRes {
     json(body: unknown) {
       this.body = body;
       return this;
+    },
+    setHeader() {
+      // no-op
     }
   };
 }
@@ -72,6 +76,7 @@ describe("runsRouter", () => {
             confidence_score: 80,
             evidence_path: "/tmp/evidence/run-1",
             branch_name: "codeporter/campaign-1/run-1",
+            pr_url: "https://github.com/org/repo/pull/1",
             summary: { status: "completed" }
           }
         ]
@@ -87,6 +92,20 @@ describe("runsRouter", () => {
 
     expect(res.statusCode).toBe(200);
     expect((res.body as any).id).toBe("run-1");
+    expect((res.body as any).prUrl).toBe("https://github.com/org/repo/pull/1");
+    expect((res.body as any).evidenceZipUrl).toBe("/runs/run-1/evidence.zip");
     expect((res.body as any).evidenceArtifacts).toHaveLength(1);
+  });
+
+  it("returns 404 when evidence zip is missing", async () => {
+    queryMock.mockResolvedValueOnce({ rows: [] });
+
+    const handler = findRouteHandler(runsRouter(), "get", "/runs/:id/evidence.zip");
+    const res = createMockRes();
+
+    await handler({ params: { id: "missing-zip" } }, res);
+
+    expect(res.statusCode).toBe(404);
+    expect(res.body).toEqual({ error: "evidence zip not found" });
   });
 });

@@ -81,7 +81,33 @@ describe("projectsRouter", () => {
 
     expect(res.statusCode).toBe(201);
     expect((res.body as any).name).toBe("demo");
+    expect((res.body as any).type).toBe("local");
     expect((res.body as any).localPath).toBe(tempDir);
+    expect(queryMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("creates a github project", async () => {
+    queryMock.mockResolvedValueOnce({ rows: [] });
+
+    const handler = findRouteHandler(projectsRouter(), "post", "/projects/github");
+    const res = createMockRes();
+
+    await handler(
+      {
+        body: {
+          name: "gh-demo",
+          owner: "Coreledger-tech",
+          repo: "code-porter",
+          defaultBranch: "main"
+        }
+      },
+      res
+    );
+
+    expect(res.statusCode).toBe(201);
+    expect((res.body as any).type).toBe("github");
+    expect((res.body as any).owner).toBe("Coreledger-tech");
+    expect((res.body as any).repo).toBe("code-porter");
     expect(queryMock).toHaveBeenCalledTimes(1);
   });
 });
