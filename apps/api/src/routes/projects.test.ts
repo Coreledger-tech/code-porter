@@ -110,4 +110,37 @@ describe("projectsRouter", () => {
     expect((res.body as any).repo).toBe("code-porter");
     expect(queryMock).toHaveBeenCalledTimes(1);
   });
+
+  it("returns project summary aggregates", async () => {
+    queryMock
+      .mockResolvedValueOnce({ rows: [{ id: "project-1", name: "demo" }] })
+      .mockResolvedValueOnce({ rows: [{ status: "completed", count: 2 }] })
+      .mockResolvedValueOnce({ rows: [{ failure_kind: "unknown", count: 1 }] })
+      .mockResolvedValueOnce({ rows: [{ p50_sec: 10, p95_sec: 20 }] })
+      .mockResolvedValueOnce({ rows: [{ retry_count: 1, cancelled_count: 0 }] })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            run_id: "run-1",
+            campaign_id: "campaign-1",
+            status: "completed",
+            queue_status: "completed",
+            started_at: "2026-02-26T00:00:00.000Z",
+            finished_at: "2026-02-26T00:00:10.000Z",
+            duration_sec: 10,
+            pr_url: null
+          }
+        ]
+      });
+
+    const handler = findRouteHandler(projectsRouter(), "get", "/projects/:id/summary");
+    const res = createMockRes();
+
+    await handler({ params: { id: "project-1" }, query: {} }, res);
+
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any).projectId).toBe("project-1");
+    expect((res.body as any).totalsByStatus.completed).toBe(2);
+    expect((res.body as any).recentRuns).toHaveLength(1);
+  });
 });

@@ -1,4 +1,5 @@
 export * from "./git.js";
+export * from "./auth-provider.js";
 export * from "./repo-provider.js";
 export * from "./workspace-manager.js";
 export * from "./pr-provider.js";

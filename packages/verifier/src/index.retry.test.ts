@@ -24,6 +24,8 @@ const policy: PolicyConfig = {
   maxChangeLines: 300,
   maxFilesChanged: 10,
   requireTestsIfPresent: true,
+  maxInflightRunsPerProject: 2,
+  maxInflightRunsGlobal: 10,
   allowedBuildSystems: ["maven"],
   verifyFailureMode: "warn",
   verify: {

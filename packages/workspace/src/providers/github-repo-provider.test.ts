@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceManagerPort } from "@code-porter/core/src/workflow-runner.js";
+import type { GitHubAuthProvider } from "../auth-provider.js";
 
 const { runGitMock } = vi.hoisted(() => {
   return {
@@ -28,15 +29,23 @@ function createWorkspaceManager(): WorkspaceManagerPort {
   };
 }
 
+function createAuthProvider(token = "test-token"): GitHubAuthProvider {
+  return {
+    getToken: vi.fn().mockResolvedValue(token)
+  };
+}
+
 describe("GitHubRepoProvider", () => {
   beforeEach(() => {
     runGitMock.mockReset();
     vi.unstubAllGlobals();
-    delete process.env.GITHUB_TOKEN;
   });
 
   it("fails with auth error when token is missing", async () => {
-    const provider = new GitHubRepoProvider(createWorkspaceManager());
+    const authProvider: GitHubAuthProvider = {
+      getToken: vi.fn().mockRejectedValue(new Error("GitHub token unavailable"))
+    };
+    const provider = new GitHubRepoProvider(createWorkspaceManager(), authProvider);
     await expect(
       provider.prepareWorkspace({
         project: {
@@ -57,7 +66,6 @@ describe("GitHubRepoProvider", () => {
   });
 
   it("clones and resolves default branch for github project", async () => {
-    process.env.GITHUB_TOKEN = "test-token";
     runGitMock.mockResolvedValueOnce({ stdout: "", stderr: "" });
     vi.stubGlobal(
       "fetch",
@@ -69,7 +77,7 @@ describe("GitHubRepoProvider", () => {
     );
 
     const manager = createWorkspaceManager();
-    const provider = new GitHubRepoProvider(manager);
+    const provider = new GitHubRepoProvider(manager, createAuthProvider("test-token"));
     const workspace = await provider.prepareWorkspace({
       project: {
         id: "p1",
@@ -91,7 +99,6 @@ describe("GitHubRepoProvider", () => {
   });
 
   it("maps metadata auth failures to auth failure kind", async () => {
-    process.env.GITHUB_TOKEN = "test-token";
     runGitMock.mockResolvedValueOnce({ stdout: "", stderr: "" });
     vi.stubGlobal(
       "fetch",
@@ -102,7 +109,10 @@ describe("GitHubRepoProvider", () => {
       })
     );
 
-    const provider = new GitHubRepoProvider(createWorkspaceManager());
+    const provider = new GitHubRepoProvider(
+      createWorkspaceManager(),
+      createAuthProvider("test-token")
+    );
     const call = provider.prepareWorkspace({
       project: {
         id: "p1",

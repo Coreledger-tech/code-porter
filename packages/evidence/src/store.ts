@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
-import { join, relative, resolve } from "node:path";
+import { mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { dirname, join, relative, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import yazl from "yazl";
 import type {
@@ -11,6 +11,13 @@ import type {
   EvidenceWriterPort,
   RunContext
 } from "@code-porter/core/src/workflow-runner.js";
+import {
+  createS3Client,
+  keepLocalEvidenceDisk,
+  resolveS3EvidenceConfig,
+  type S3EvidenceConfig,
+  uploadFileToS3
+} from "./s3.js";
 
 function runDir(runCtx: RunContext): string {
   return resolve(runCtx.evidenceRoot, runCtx.projectId, runCtx.campaignId, runCtx.runId);
@@ -36,7 +43,7 @@ async function buildZip(input: {
   sourceDir: string;
   targetZipPath: string;
 }): Promise<void> {
-  await mkdir(join(input.targetZipPath, ".."), { recursive: true });
+  await mkdir(dirname(input.targetZipPath), { recursive: true });
 
   const files = await listFiles(input.sourceDir);
   const zipFile = new yazl.ZipFile();
@@ -66,15 +73,20 @@ async function hashFile(path: string): Promise<string> {
   return hash.digest("hex");
 }
 
+function s3Uri(bucket: string, objectKey: string): string {
+  return `s3://${bucket}/${objectKey}`;
+}
+
 export class LocalEvidenceStore implements EvidenceStorePort {
   constructor(private readonly writer: EvidenceWriterPort) {}
 
   async finalizeAndExport(runCtx: RunContext): Promise<{
     manifest: EvidenceManifest;
     zip?: EvidenceExportArtifact;
+    exports?: EvidenceExportArtifact[];
   }> {
     const manifest = await this.writer.finalize(runCtx);
-    return { manifest };
+    return { manifest, exports: manifest.exports ?? [] };
   }
 }
 
@@ -87,6 +99,7 @@ export class ZipEvidenceStore implements EvidenceStorePort {
   async finalizeAndExport(runCtx: RunContext): Promise<{
     manifest: EvidenceManifest;
     zip?: EvidenceExportArtifact;
+    exports?: EvidenceExportArtifact[];
   }> {
     const baseResult = await this.baseStore.finalizeAndExport(runCtx);
 
@@ -111,31 +124,155 @@ export class ZipEvidenceStore implements EvidenceStorePort {
       type: "evidence.zip",
       path: zipPath,
       sha256: zipSha256,
-      size: details.size
+      size: details.size,
+      storageType: "local_fs"
     };
+
+    const exports = [...(baseResult.manifest.exports ?? []), exportArtifact];
 
     const updatedManifest: EvidenceManifest = {
       ...baseResult.manifest,
-      exports: [...(baseResult.manifest.exports ?? []), exportArtifact]
+      exports
     };
 
     await writeFile(join(source, "manifest.json"), JSON.stringify(updatedManifest, null, 2), "utf8");
 
     return {
       manifest: updatedManifest,
-      zip: exportArtifact
+      zip: exportArtifact,
+      exports
     };
   }
 }
 
-export class S3EvidenceStore implements EvidenceStorePort {
-  constructor(private readonly baseStore: EvidenceStorePort) {}
+export class S3CompatibleEvidenceStore implements EvidenceStorePort {
+  private readonly uploadClient;
+  private readonly keepLocalDisk: boolean;
+
+  constructor(
+    private readonly baseStore: EvidenceStorePort,
+    private readonly config: S3EvidenceConfig,
+    options?: { keepLocalDisk?: boolean }
+  ) {
+    this.uploadClient = createS3Client(config);
+    this.keepLocalDisk = options?.keepLocalDisk ?? keepLocalEvidenceDisk();
+  }
+
+  static fromEnv(baseStore: EvidenceStorePort): S3CompatibleEvidenceStore | null {
+    const config = resolveS3EvidenceConfig();
+    if (!config) {
+      return null;
+    }
+
+    return new S3CompatibleEvidenceStore(baseStore, config, {
+      keepLocalDisk: keepLocalEvidenceDisk()
+    });
+  }
 
   async finalizeAndExport(runCtx: RunContext): Promise<{
     manifest: EvidenceManifest;
     zip?: EvidenceExportArtifact;
+    exports?: EvidenceExportArtifact[];
   }> {
-    // TODO: Upload manifest and artifacts to object storage and return signed URLs.
-    return this.baseStore.finalizeAndExport(runCtx);
+    const baseResult = await this.baseStore.finalizeAndExport(runCtx);
+
+    if (!baseResult.zip) {
+      throw new Error("S3 evidence export requires a local evidence.zip artifact");
+    }
+
+    const runEvidenceDir = runDir(runCtx);
+    const manifestPath = join(runEvidenceDir, "manifest.json");
+    const objectPrefix = `${runCtx.projectId}/${runCtx.campaignId}/${runCtx.runId}`;
+
+    const zipKey = `${objectPrefix}/evidence.zip`;
+    const manifestKey = `${objectPrefix}/manifest.json`;
+
+    await uploadFileToS3({
+      client: this.uploadClient,
+      bucket: this.config.bucket,
+      objectKey: zipKey,
+      filePath: baseResult.zip.path,
+      contentType: "application/zip"
+    });
+
+    const remoteZipArtifact: EvidenceExportArtifact = {
+      type: "evidence.zip",
+      path: s3Uri(this.config.bucket, zipKey),
+      sha256: baseResult.zip.sha256,
+      size: baseResult.zip.size,
+      storageType: "s3",
+      bucket: this.config.bucket,
+      objectKey: zipKey
+    };
+
+    const mergedManifestExports = [
+      ...(baseResult.manifest.exports ?? []),
+      remoteZipArtifact
+    ].filter((artifact, index, artifacts) => {
+      return (
+        artifacts.findIndex(
+          (candidate) =>
+            candidate.type === artifact.type &&
+            candidate.path === artifact.path &&
+            candidate.sha256 === artifact.sha256
+        ) === index
+      );
+    });
+
+    const mergedManifest: EvidenceManifest = {
+      ...baseResult.manifest,
+      exports: mergedManifestExports
+    };
+
+    await writeFile(manifestPath, JSON.stringify(mergedManifest, null, 2), "utf8");
+
+    const manifestDetails = await stat(manifestPath);
+    const manifestSha = await hashFile(manifestPath);
+
+    await uploadFileToS3({
+      client: this.uploadClient,
+      bucket: this.config.bucket,
+      objectKey: manifestKey,
+      filePath: manifestPath,
+      contentType: "application/json"
+    });
+
+    const remoteManifestArtifact: EvidenceExportArtifact = {
+      type: "manifest.json",
+      path: s3Uri(this.config.bucket, manifestKey),
+      sha256: manifestSha,
+      size: manifestDetails.size,
+      storageType: "s3",
+      bucket: this.config.bucket,
+      objectKey: manifestKey
+    };
+
+    const exports: EvidenceExportArtifact[] = [
+      ...(baseResult.exports ?? []),
+      ...mergedManifestExports,
+      remoteManifestArtifact
+    ].filter((artifact, index, artifacts) => {
+      return (
+        artifacts.findIndex(
+          (candidate) =>
+            candidate.type === artifact.type &&
+            candidate.path === artifact.path &&
+            candidate.sha256 === artifact.sha256
+        ) === index
+      );
+    });
+
+    if (!this.keepLocalDisk) {
+      await rm(runEvidenceDir, { recursive: true, force: true });
+      await rm(baseResult.zip.path, { force: true });
+    }
+
+    return {
+      manifest: mergedManifest,
+      zip: remoteZipArtifact,
+      exports
+    };
   }
 }
+
+export class S3EvidenceStore extends S3CompatibleEvidenceStore {}

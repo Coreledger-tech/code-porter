@@ -1,12 +1,25 @@
+import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
-import { access, cp, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  access,
+  cp,
+  mkdtemp,
+  mkdir,
+  readFile,
+  rm,
+  utimes,
+  writeFile
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
+import { CreateBucketCommand, HeadBucketCommand, S3Client } from "@aws-sdk/client-s3";
 import { Client } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { PrLifecyclePollerWorker } from "../src/pr-poller-worker.js";
+import { AsyncRunWorker } from "../src/run-worker.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -61,6 +74,58 @@ async function runGitStdout(repoPath: string, args: string[]): Promise<string> {
     timeout: 120000
   });
   return stdout.trim();
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function integrationS3Config(): {
+  endpoint: string;
+  region: string;
+  bucket: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  forcePathStyle: boolean;
+} {
+  return {
+    endpoint: process.env.S3_PUBLIC_ENDPOINT ?? "http://127.0.0.1:9000",
+    region: process.env.S3_REGION ?? "us-east-1",
+    bucket: process.env.S3_BUCKET ?? "code-porter-evidence",
+    accessKeyId: process.env.S3_ACCESS_KEY_ID ?? "minioadmin",
+    secretAccessKey: process.env.S3_SECRET_ACCESS_KEY ?? "minioadmin",
+    forcePathStyle: (process.env.S3_FORCE_PATH_STYLE ?? "true").toLowerCase() !== "false"
+  };
+}
+
+async function ensureS3BucketExists(config: {
+  endpoint: string;
+  region: string;
+  bucket: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  forcePathStyle: boolean;
+}): Promise<void> {
+  const client = new S3Client({
+    endpoint: config.endpoint,
+    region: config.region,
+    forcePathStyle: config.forcePathStyle,
+    credentials: {
+      accessKeyId: config.accessKeyId,
+      secretAccessKey: config.secretAccessKey
+    }
+  });
+
+  try {
+    await client.send(new HeadBucketCommand({ Bucket: config.bucket }));
+  } catch {
+    await client.send(new CreateBucketCommand({ Bucket: config.bucket }));
+  }
 }
 
 async function prepareMavenRepo(input: {
@@ -134,6 +199,78 @@ async function apiFetchRaw(baseUrl: string, path: string, options?: RequestInit)
   return fetch(`${baseUrl}${path}`, options);
 }
 
+type TerminalRunStatus =
+  | "completed"
+  | "needs_review"
+  | "blocked"
+  | "failed"
+  | "cancelled";
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolveSleep) => {
+    setTimeout(resolveSleep, ms);
+  });
+}
+
+async function waitForRunTerminal<T extends {
+  status: string;
+  queueStatus?: string;
+}>(input: {
+  baseUrl: string;
+  runId: string;
+  timeoutMs?: number;
+}): Promise<T> {
+  const terminal = new Set<TerminalRunStatus>([
+    "completed",
+    "needs_review",
+    "blocked",
+    "failed",
+    "cancelled"
+  ]);
+  const queueTerminal = new Set(["completed", "failed", "cancelled"]);
+
+  const deadline = Date.now() + (input.timeoutMs ?? 120000);
+  while (Date.now() < deadline) {
+    const run = await apiFetch<T>(input.baseUrl, `/runs/${input.runId}`);
+    if (
+      terminal.has(run.status as TerminalRunStatus) &&
+      queueTerminal.has(run.queueStatus ?? "completed")
+    ) {
+      return run;
+    }
+
+    await sleep(250);
+  }
+
+  throw new Error(`Timed out waiting for run ${input.runId} to finish`);
+}
+
+async function waitForRunStatus<T extends {
+  status: string;
+  queueStatus?: string;
+}>(input: {
+  baseUrl: string;
+  runId: string;
+  expectedStatuses: string[];
+  timeoutMs?: number;
+}): Promise<T> {
+  const expected = new Set(input.expectedStatuses);
+  const deadline = Date.now() + (input.timeoutMs ?? 60000);
+
+  while (Date.now() < deadline) {
+    const run = await apiFetch<T>(input.baseUrl, `/runs/${input.runId}`);
+    if (expected.has(run.status)) {
+      return run;
+    }
+
+    await sleep(200);
+  }
+
+  throw new Error(
+    `Timed out waiting for run ${input.runId} to reach one of: ${input.expectedStatuses.join(", ")}`
+  );
+}
+
 describe("API integration", () => {
   const hostPort = process.env.POSTGRES_HOST_PORT ?? "5433";
   const baseDbUrl =
@@ -145,7 +282,9 @@ describe("API integration", () => {
   let evidenceRoot = "";
   let baseUrl = "";
   let server: Server;
-  let queryDb: (text: string, params?: unknown[]) => Promise<{ rows: unknown[] }>;
+  let worker: AsyncRunWorker;
+  let workerPromise: Promise<void>;
+  let queryDb: <T = unknown>(text: string, params?: unknown[]) => Promise<{ rows: T[] }>;
   let closeDbPool: () => Promise<void>;
   let cleanupPaths: string[] = [];
 
@@ -153,6 +292,7 @@ describe("API integration", () => {
     process.env.DATABASE_URL = testDbUrl;
     evidenceRoot = await evidenceRootPromise;
     process.env.EVIDENCE_ROOT = evidenceRoot;
+    process.env.EVIDENCE_EXPORT_ROOT = join(evidenceRoot, "exports");
 
     await ensureDatabaseExists(testDbUrl);
 
@@ -173,30 +313,55 @@ describe("API integration", () => {
         resolveListen();
       });
     });
+
+    worker = new AsyncRunWorker({
+      workerId: "integration-worker",
+      pollMs: 100,
+      concurrency: 1
+    });
+    workerPromise = worker.start();
   });
 
   afterAll(async () => {
-    await new Promise<void>((resolveClose, rejectClose) => {
-      server.close((error) => {
-        if (error) {
-          rejectClose(error);
-          return;
-        }
-        resolveClose();
+    if (worker) {
+      worker.stop();
+      if (workerPromise) {
+        await Promise.race([
+          workerPromise,
+          sleep(5000)
+        ]);
+      }
+    }
+
+    if (server) {
+      await new Promise<void>((resolveClose, rejectClose) => {
+        server.close((error) => {
+          if (error) {
+            rejectClose(error);
+            return;
+          }
+          resolveClose();
+        });
       });
-    });
-    await closeDbPool();
+    }
+    if (closeDbPool) {
+      await closeDbPool();
+    }
 
     await Promise.all(
       cleanupPaths.map(async (path) => {
         await rm(path, { recursive: true, force: true });
       })
     );
-    await rm(evidenceRoot, { recursive: true, force: true });
+    if (evidenceRoot) {
+      await rm(evidenceRoot, { recursive: true, force: true });
+    }
   });
 
   beforeEach(async () => {
     await queryDb("truncate table evidence_artifacts, runs, campaigns, projects restart identity cascade");
+    process.env.EVIDENCE_STORE_MODE = "local";
+    process.env.EVIDENCE_KEEP_LOCAL_DISK = "true";
   });
 
   it("runs project -> campaign -> plan -> apply and writes evidence artifacts", async () => {
@@ -227,8 +392,15 @@ describe("API integration", () => {
       })
     });
 
-    await apiFetch<{ runId: string; status: string }>(baseUrl, `/campaigns/${campaign.id}/plan`, {
-      method: "POST"
+    const planStart = await apiFetch<{ runId: string; status: string }>(
+      baseUrl,
+      `/campaigns/${campaign.id}/plan`,
+      { method: "POST" }
+    );
+    expect(planStart.status).toBe("queued");
+    await waitForRunTerminal({
+      baseUrl,
+      runId: planStart.runId
     });
 
     const applyStart = await apiFetch<{ runId: string; status: string }>(
@@ -236,17 +408,33 @@ describe("API integration", () => {
       `/campaigns/${campaign.id}/apply`,
       { method: "POST" }
     );
+    expect(applyStart.status).toBe("queued");
 
-    const run = await apiFetch<{
+    const run = await waitForRunTerminal<{
       status: string;
+      queueStatus: string;
       branchName: string | null;
       evidencePath: string;
+      evidenceZipUrl: string | null;
+      evidenceManifestUrl: string | null;
       summary: { workspace?: { branchName?: string } };
       evidenceArtifacts: Array<{ type: string; path: string }>;
-    }>(baseUrl, `/runs/${applyStart.runId}`);
+    }>({
+      baseUrl,
+      runId: applyStart.runId
+    });
+
+    const eventsResponse = await apiFetch<{
+      events: Array<{ eventType: string; step: string | null }>;
+      nextAfterId: number;
+    }>(baseUrl, `/runs/${applyStart.runId}/events`);
 
     expect(["completed", "needs_review", "blocked"]).toContain(run.status);
+    expect(run.queueStatus).toMatch(/completed|failed/);
     expect(run.evidenceArtifacts.length).toBeGreaterThan(0);
+    expect(eventsResponse.events.length).toBeGreaterThan(0);
+    expect(eventsResponse.events.some((event) => event.step === "scan")).toBe(true);
+    expect(eventsResponse.events.some((event) => event.step === "verify")).toBe(true);
 
     const requiredArtifacts = [
       "run.json",
@@ -263,6 +451,8 @@ describe("API integration", () => {
       expect(artifactTypes).toContain(artifactType);
     }
     expect(artifactTypes).toContain("evidence.zip");
+    expect(run.evidenceZipUrl).toContain(`/runs/${applyStart.runId}/evidence.zip`);
+    expect(run.evidenceManifestUrl).toContain(`/runs/${applyStart.runId}/evidence.manifest`);
 
     for (const artifact of run.evidenceArtifacts) {
       await access(artifact.path);
@@ -284,10 +474,110 @@ describe("API integration", () => {
     const zipBytes = new Uint8Array(await evidenceZipResponse.arrayBuffer());
     expect(zipBytes.byteLength).toBeGreaterThan(0);
 
+    const manifestResponse = await apiFetchRaw(
+      baseUrl,
+      `/runs/${applyStart.runId}/evidence.manifest`
+    );
+    expect(manifestResponse.status).toBe(200);
+    expect(manifestResponse.headers.get("content-type")).toContain("application/json");
+
     const sourceHeadAfter = await runGitStdout(repoPath, ["rev-parse", "HEAD"]);
     const sourceStatusAfter = await runGitStdout(repoPath, ["status", "--porcelain"]);
     expect(sourceHeadAfter).toBe(sourceHeadBefore);
     expect(sourceStatusAfter).toBe("");
+  });
+
+  it("uploads evidence to s3-compatible storage and returns remote URLs", async () => {
+    const s3 = integrationS3Config();
+    await ensureS3BucketExists(s3);
+
+    process.env.EVIDENCE_STORE_MODE = "s3";
+    process.env.S3_ENDPOINT = s3.endpoint;
+    process.env.S3_PUBLIC_ENDPOINT = s3.endpoint;
+    process.env.S3_REGION = s3.region;
+    process.env.S3_BUCKET = s3.bucket;
+    process.env.S3_ACCESS_KEY_ID = s3.accessKeyId;
+    process.env.S3_SECRET_ACCESS_KEY = s3.secretAccessKey;
+    process.env.S3_FORCE_PATH_STYLE = s3.forcePathStyle ? "true" : "false";
+    process.env.EVIDENCE_URL_MODE = "signed";
+    process.env.EVIDENCE_SIGNED_URL_TTL_SECONDS = "3600";
+
+    const repoPath = await prepareMavenRepo({ repoName: "code-porter-int-s3" });
+    cleanupPaths.push(repoPath);
+
+    const project = await apiFetch<{ id: string }>(baseUrl, "/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "integration-s3",
+        localPath: repoPath
+      })
+    });
+
+    const campaign = await apiFetch<{ id: string }>(baseUrl, "/campaigns", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectId: project.id,
+        policyId: "default",
+        recipePack: "java-maven-core"
+      })
+    });
+
+    const applyStart = await apiFetch<{ runId: string; status: string }>(
+      baseUrl,
+      `/campaigns/${campaign.id}/apply`,
+      { method: "POST" }
+    );
+    expect(applyStart.status).toBe("queued");
+
+    const run = await waitForRunTerminal<{
+      id: string;
+      status: string;
+      queueStatus: string;
+      evidenceZipUrl: string | null;
+      evidenceManifestUrl: string | null;
+      evidenceStorage: "local_fs" | "s3";
+      evidenceUrlMode: "signed" | "public" | "local_proxy";
+    }>({
+      baseUrl,
+      runId: applyStart.runId
+    });
+
+    expect(run.evidenceStorage).toBe("s3");
+    expect(run.evidenceUrlMode).toBe("signed");
+    expect(run.evidenceZipUrl).toBeTruthy();
+    expect(run.evidenceManifestUrl).toBeTruthy();
+    expect(run.evidenceZipUrl).toContain("X-Amz-Algorithm");
+    expect(run.evidenceManifestUrl).toContain("X-Amz-Algorithm");
+
+    const artifactRows = await queryDb<{
+      type: string;
+      storage_type: string;
+    }>(
+      `select type, storage_type from evidence_artifacts where run_id = $1`,
+      [applyStart.runId]
+    );
+    expect(
+      artifactRows.rows.some(
+        (row) => row.type === "evidence.zip" && row.storage_type === "s3"
+      )
+    ).toBe(true);
+    expect(
+      artifactRows.rows.some(
+        (row) => row.type === "manifest.json" && row.storage_type === "s3"
+      )
+    ).toBe(true);
+
+    const zipRoute = await fetch(`${baseUrl}/runs/${applyStart.runId}/evidence.zip`, {
+      redirect: "manual"
+    });
+    expect([200, 302]).toContain(zipRoute.status);
+
+    const manifestRoute = await fetch(`${baseUrl}/runs/${applyStart.runId}/evidence.manifest`, {
+      redirect: "manual"
+    });
+    expect([200, 302]).toContain(manifestRoute.status);
   });
 
   it("marks artifact resolution as blocked with null confidence score", async () => {
@@ -321,17 +611,21 @@ describe("API integration", () => {
       })
     });
 
-    const applyStart = await apiFetch<{ runId: string }>(
+    const applyStart = await apiFetch<{ runId: string; status: string }>(
       baseUrl,
       `/campaigns/${campaign.id}/apply`,
       { method: "POST" }
     );
+    expect(applyStart.status).toBe("queued");
 
-    const run = await apiFetch<{
+    const run = await waitForRunTerminal<{
       status: string;
       confidenceScore: number | null;
       summary: { blockedReason?: string };
-    }>(baseUrl, `/runs/${applyStart.runId}`);
+    }>({
+      baseUrl,
+      runId: applyStart.runId
+    });
 
     expect(run.status).toBe("blocked");
     expect(run.confidenceScore).toBeNull();
@@ -361,16 +655,20 @@ describe("API integration", () => {
       })
     });
 
-    const applyStart = await apiFetch<{ runId: string }>(
+    const applyStart = await apiFetch<{ runId: string; status: string }>(
       baseUrl,
       `/campaigns/${campaign.id}/apply`,
       { method: "POST" }
     );
+    expect(applyStart.status).toBe("queued");
 
-    const run = await apiFetch<{
+    const run = await waitForRunTerminal<{
       status: string;
       summary: Record<string, unknown>;
-    }>(baseUrl, `/runs/${applyStart.runId}`);
+    }>({
+      baseUrl,
+      runId: applyStart.runId
+    });
 
     expect(run.status).toBe("needs_review");
   });
@@ -401,21 +699,78 @@ describe("API integration", () => {
       })
     });
 
-    const applyStart = await apiFetch<{ runId: string }>(
+    const applyStart = await apiFetch<{ runId: string; status: string }>(
       baseUrl,
       `/campaigns/${campaign.id}/apply`,
       { method: "POST" }
     );
+    expect(applyStart.status).toBe("queued");
 
-    const run = await apiFetch<{
+    const run = await waitForRunTerminal<{
       status: string;
       summary: { blockedReason?: string; error?: string };
-    }>(baseUrl, `/runs/${applyStart.runId}`);
+    }>({
+      baseUrl,
+      runId: applyStart.runId
+    });
 
     expect(run.status).toBe("blocked");
     expect(run.summary.blockedReason ?? run.summary.error).toContain(
       "Apply blocked: source repository has uncommitted changes"
     );
+  });
+
+  it("returns 429 when inflight run limits are exceeded", async () => {
+    const repoPath = await prepareMavenRepo({ repoName: "code-porter-int-throttle" });
+    cleanupPaths.push(repoPath);
+
+    const project = await apiFetch<{ id: string }>(baseUrl, "/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "integration-throttle",
+        localPath: repoPath
+      })
+    });
+
+    const campaign = await apiFetch<{ id: string }>(baseUrl, "/campaigns", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectId: project.id,
+        policyId: "default",
+        recipePack: "java-maven-core"
+      })
+    });
+
+    await queryDb(
+      `insert into runs (id, campaign_id, mode, status, evidence_path, started_at)
+       values ($1, $2, 'apply', 'running', $3, now()),
+              ($4, $2, 'apply', 'running', $5, now())`,
+      [
+        randomUUID(),
+        campaign.id,
+        `/tmp/fake-evidence-${randomUUID()}`,
+        randomUUID(),
+        `/tmp/fake-evidence-${randomUUID()}`
+      ]
+    );
+
+    const applyResponse = await apiFetchRaw(baseUrl, `/campaigns/${campaign.id}/apply`, {
+      method: "POST"
+    });
+
+    expect(applyResponse.status).toBe(429);
+    const payload = (await applyResponse.json()) as {
+      error: string;
+      limitType: string;
+      currentInflight: number;
+      limit: number;
+      retryHint: string;
+    };
+    expect(payload.error).toBe("run start throttled by policy");
+    expect(payload.limitType).toBe("project");
+    expect(payload.currentInflight).toBeGreaterThanOrEqual(payload.limit);
   });
 
   it("rejects invalid project path and returns 404 for unknown run", async () => {
@@ -451,6 +806,231 @@ describe("API integration", () => {
 
     expect(withNetwork.network?.mavenCentral).toBeDefined();
     expect(typeof withNetwork.network?.mavenCentral.ok).toBe("boolean");
+  });
+
+  it("exposes prometheus metrics", async () => {
+    const response = await apiFetchRaw(baseUrl, "/metrics");
+    expect(response.status).toBe(200);
+    const contentType = response.headers.get("content-type") ?? "";
+    expect(contentType).toContain("text/plain");
+
+    const body = await response.text();
+    expect(body).toContain("codeporter_runs_enqueued_total");
+    expect(body).toContain("codeporter_run_outcomes_total");
+    expect(body).toContain("codeporter_runs_cancelled_total");
+    expect(body).toContain("codeporter_queue_retries_total");
+    expect(body).toContain("codeporter_queue_lease_reclaims_total");
+  });
+
+  it("pauses and resumes campaign and exposes summaries", async () => {
+    const repoPath = await prepareMavenRepo({ repoName: "code-porter-int-pause-summary" });
+    cleanupPaths.push(repoPath);
+
+    const project = await apiFetch<{ id: string }>(baseUrl, "/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "integration-pause-summary",
+        localPath: repoPath
+      })
+    });
+
+    const campaign = await apiFetch<{ id: string }>(baseUrl, "/campaigns", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectId: project.id,
+        policyId: "default",
+        recipePack: "java-maven-core"
+      })
+    });
+
+    const paused = await apiFetch<{
+      campaignId: string;
+      lifecycleStatus: "paused";
+      pausedAt: string;
+    }>(baseUrl, `/campaigns/${campaign.id}/pause`, {
+      method: "POST"
+    });
+    expect(paused.lifecycleStatus).toBe("paused");
+
+    const blocked = await apiFetchRaw(baseUrl, `/campaigns/${campaign.id}/apply`, {
+      method: "POST"
+    });
+    expect(blocked.status).toBe(409);
+
+    const resumed = await apiFetch<{
+      campaignId: string;
+      lifecycleStatus: "active";
+      resumedAt: string;
+    }>(baseUrl, `/campaigns/${campaign.id}/resume`, {
+      method: "POST"
+    });
+    expect(resumed.lifecycleStatus).toBe("active");
+
+    const apply = await apiFetch<{ runId: string; status: string }>(
+      baseUrl,
+      `/campaigns/${campaign.id}/apply`,
+      { method: "POST" }
+    );
+    expect(apply.status).toBe("queued");
+    await waitForRunTerminal({
+      baseUrl,
+      runId: apply.runId
+    });
+
+    const projectSummary = await apiFetch<{
+      projectId: string;
+      totalsByStatus: Record<string, number>;
+      recentRuns: Array<{ runId: string }>;
+    }>(baseUrl, `/projects/${project.id}/summary`);
+    expect(projectSummary.projectId).toBe(project.id);
+    expect(projectSummary.recentRuns.length).toBeGreaterThan(0);
+
+    const campaignSummary = await apiFetch<{
+      campaignId: string;
+      lifecycleStatus: string;
+      totalsByStatus: Record<string, number>;
+      recentRuns: Array<{ runId: string }>;
+    }>(baseUrl, `/campaigns/${campaign.id}/summary`);
+    expect(campaignSummary.campaignId).toBe(campaign.id);
+    expect(campaignSummary.lifecycleStatus).toBe("active");
+    expect(campaignSummary.recentRuns.length).toBeGreaterThan(0);
+  });
+
+  it("cancels a running run and reaches cancelled terminal state", async () => {
+    const repoPath = await prepareMavenRepo({ repoName: "code-porter-int-cancel" });
+    cleanupPaths.push(repoPath);
+
+    const project = await apiFetch<{ id: string }>(baseUrl, "/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "integration-cancel",
+        localPath: repoPath
+      })
+    });
+
+    const campaign = await apiFetch<{ id: string }>(baseUrl, "/campaigns", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectId: project.id,
+        policyId: "default",
+        recipePack: "java-maven-core"
+      })
+    });
+
+    const apply = await apiFetch<{ runId: string; status: string }>(
+      baseUrl,
+      `/campaigns/${campaign.id}/apply`,
+      { method: "POST" }
+    );
+    expect(apply.status).toBe("queued");
+
+    await waitForRunStatus({
+      baseUrl,
+      runId: apply.runId,
+      expectedStatuses: ["running", "needs_review", "blocked", "completed", "failed"]
+    });
+
+    const cancel = await apiFetch<{
+      runId: string;
+      status: string;
+      queueStatus: string;
+      message?: string;
+    }>(baseUrl, `/runs/${apply.runId}/cancel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason: "operator cancel test" })
+    });
+    expect(cancel.runId).toBe(apply.runId);
+
+    const run = await waitForRunTerminal<{
+      status: string;
+      queueStatus: string;
+      summary: Record<string, unknown>;
+    }>({
+      baseUrl,
+      runId: apply.runId
+    });
+
+    expect(run.status).toBe("cancelled");
+    expect(run.queueStatus).toBe("cancelled");
+    expect(run.summary.cancelRequestedAt).toBeTruthy();
+  });
+
+  it("cleanup commands remove stale workspace and evidence cache entries", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "code-porter-int-workspace-cleanup-"));
+    const evidenceCacheRoot = await mkdtemp(join(tmpdir(), "code-porter-int-evidence-cleanup-"));
+    const evidenceExportRoot = await mkdtemp(
+      join(tmpdir(), "code-porter-int-evidence-export-cleanup-")
+    );
+    cleanupPaths.push(workspaceRoot, evidenceCacheRoot, evidenceExportRoot);
+
+    const staleWorkspace = join(workspaceRoot, "stale-workspace");
+    const freshWorkspace = join(workspaceRoot, "fresh-workspace");
+    const staleEvidence = join(evidenceCacheRoot, "stale-evidence");
+    const freshEvidence = join(evidenceCacheRoot, "fresh-evidence");
+    const staleExport = join(evidenceExportRoot, "stale-export");
+    const freshExport = join(evidenceExportRoot, "fresh-export");
+
+    await mkdir(staleWorkspace, { recursive: true });
+    await mkdir(freshWorkspace, { recursive: true });
+    await mkdir(staleEvidence, { recursive: true });
+    await mkdir(freshEvidence, { recursive: true });
+    await mkdir(staleExport, { recursive: true });
+    await mkdir(freshExport, { recursive: true });
+
+    const now = Date.now();
+    const staleTime = new Date(now - 10 * 24 * 60 * 60 * 1000);
+    const freshTime = new Date(now - 1 * 24 * 60 * 60 * 1000);
+
+    await Promise.all([
+      utimes(staleWorkspace, staleTime, staleTime),
+      utimes(staleEvidence, staleTime, staleTime),
+      utimes(staleExport, staleTime, staleTime),
+      utimes(freshWorkspace, freshTime, freshTime),
+      utimes(freshEvidence, freshTime, freshTime),
+      utimes(freshExport, freshTime, freshTime)
+    ]);
+
+    await execFileAsync(
+      "node",
+      ["--import=tsx", "apps/api/src/ops/cleanup-workspaces.ts"],
+      {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          WORKSPACE_ROOT: workspaceRoot,
+          WORKSPACE_TTL_DAYS: "7"
+        }
+      }
+    );
+
+    expect(await exists(staleWorkspace)).toBe(false);
+    expect(await exists(freshWorkspace)).toBe(true);
+
+    await execFileAsync(
+      "node",
+      ["--import=tsx", "apps/api/src/ops/cleanup-evidence.ts"],
+      {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          EVIDENCE_STORE_MODE: "s3",
+          EVIDENCE_KEEP_LOCAL_DISK: "true",
+          EVIDENCE_CACHE_TTL_DAYS: "7",
+          EVIDENCE_ROOT: evidenceCacheRoot,
+          EVIDENCE_EXPORT_ROOT: evidenceExportRoot
+        }
+      }
+    );
+
+    expect(await exists(staleEvidence)).toBe(false);
+    expect(await exists(freshEvidence)).toBe(true);
+    expect(await exists(staleExport)).toBe(false);
+    expect(await exists(freshExport)).toBe(true);
   });
 
   it("stores prUrl for github projects with mocked GitHub PR API", async () => {
@@ -511,17 +1091,23 @@ describe("API integration", () => {
         })
       });
 
-      const applyStart = await apiFetch<{ runId: string }>(
+      const applyStart = await apiFetch<{ runId: string; status: string }>(
         baseUrl,
         `/campaigns/${campaign.id}/apply`,
         { method: "POST" }
       );
+      expect(applyStart.status).toBe("queued");
 
-      const run = await apiFetch<{
+      const run = await waitForRunTerminal<{
         id: string;
+        status: string;
+        queueStatus: string;
         prUrl?: string;
         summary: { prUrl?: string };
-      }>(baseUrl, `/runs/${applyStart.runId}`);
+      }>({
+        baseUrl,
+        runId: applyStart.runId
+      });
 
       expect(run.prUrl).toBe("https://github.com/Coreledger-tech/code-porter/pull/123");
       expect(run.summary.prUrl).toBe("https://github.com/Coreledger-tech/code-porter/pull/123");
@@ -533,5 +1119,539 @@ describe("API integration", () => {
       }
       vi.unstubAllGlobals();
     }
+  });
+
+  it("uses GitHub App auth mode with mocked token exchange and redacts secrets", async () => {
+    const remoteRepo = await prepareMavenRepo({ repoName: "code-porter-int-github-app-remote" });
+    cleanupPaths.push(remoteRepo);
+    const remoteDefaultBranch = await runGitStdout(remoteRepo, [
+      "rev-parse",
+      "--abbrev-ref",
+      "HEAD"
+    ]);
+
+    const keyDir = await mkdtemp(join(tmpdir(), "code-porter-int-gh-app-key-"));
+    cleanupPaths.push(keyDir);
+    const keyPath = join(keyDir, "app.pem");
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    await writeFile(keyPath, privateKey.export({ type: "pkcs1", format: "pem" }), "utf8");
+
+    const originalAuthMode = process.env.GITHUB_AUTH_MODE;
+    const originalToken = process.env.GITHUB_TOKEN;
+    const originalAppId = process.env.GITHUB_APP_ID;
+    const originalInstallation = process.env.GITHUB_APP_INSTALLATION_ID;
+    const originalKeyPath = process.env.GITHUB_APP_PRIVATE_KEY_PATH;
+
+    process.env.GITHUB_AUTH_MODE = "app";
+    process.env.GITHUB_APP_ID = "12345";
+    process.env.GITHUB_APP_INSTALLATION_ID = "67890";
+    process.env.GITHUB_APP_PRIVATE_KEY_PATH = keyPath;
+    delete process.env.GITHUB_TOKEN;
+
+    const realFetch = global.fetch;
+    const appToken = "ghs_super_secret_install_token";
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.startsWith("http://127.0.0.1")) {
+        return realFetch(input, init);
+      }
+
+      if (url.includes("/app/installations/67890/access_tokens")) {
+        return new Response(
+          JSON.stringify({
+            token: appToken,
+            expires_at: new Date(Date.now() + 30 * 60 * 1000).toISOString()
+          }),
+          {
+            status: 201,
+            headers: { "content-type": "application/json" }
+          }
+        );
+      }
+
+      if (url.includes("api.github.com/repos/Coreledger-tech/code-porter/pulls")) {
+        return new Response(
+          JSON.stringify({
+            html_url: "https://github.com/Coreledger-tech/code-porter/pull/456"
+          }),
+          {
+            status: 201,
+            headers: { "content-type": "application/json" }
+          }
+        );
+      }
+
+      return new Response(JSON.stringify({ default_branch: "main" }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const project = await apiFetch<{ id: string }>(baseUrl, "/projects/github", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "github-app-integration",
+          owner: "Coreledger-tech",
+          repo: "code-porter",
+          cloneUrl: remoteRepo,
+          defaultBranch: remoteDefaultBranch
+        })
+      });
+
+      const campaign = await apiFetch<{ id: string }>(baseUrl, "/campaigns", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: project.id,
+          policyId: "default",
+          recipePack: "java-maven-core",
+          targetSelector: remoteDefaultBranch
+        })
+      });
+
+      const applyStart = await apiFetch<{ runId: string; status: string }>(
+        baseUrl,
+        `/campaigns/${campaign.id}/apply`,
+        { method: "POST" }
+      );
+      expect(applyStart.status).toBe("queued");
+
+      const run = await waitForRunTerminal<{
+        id: string;
+        status: string;
+        queueStatus: string;
+        prUrl?: string;
+        summary: Record<string, unknown>;
+      }>({
+        baseUrl,
+        runId: applyStart.runId
+      });
+
+      const events = await apiFetch<{
+        events: Array<{ message: string; payload: Record<string, unknown> }>;
+      }>(baseUrl, `/runs/${applyStart.runId}/events`);
+
+      expect(run.prUrl).toBe("https://github.com/Coreledger-tech/code-porter/pull/456");
+      expect(fetchMock).toHaveBeenCalled();
+
+      const serializedSummary = JSON.stringify(run.summary);
+      const serializedEvents = JSON.stringify(events.events);
+      expect(serializedSummary).not.toContain(appToken);
+      expect(serializedEvents).not.toContain(appToken);
+    } finally {
+      if (originalAuthMode === undefined) {
+        delete process.env.GITHUB_AUTH_MODE;
+      } else {
+        process.env.GITHUB_AUTH_MODE = originalAuthMode;
+      }
+
+      if (originalToken === undefined) {
+        delete process.env.GITHUB_TOKEN;
+      } else {
+        process.env.GITHUB_TOKEN = originalToken;
+      }
+
+      if (originalAppId === undefined) {
+        delete process.env.GITHUB_APP_ID;
+      } else {
+        process.env.GITHUB_APP_ID = originalAppId;
+      }
+
+      if (originalInstallation === undefined) {
+        delete process.env.GITHUB_APP_INSTALLATION_ID;
+      } else {
+        process.env.GITHUB_APP_INSTALLATION_ID = originalInstallation;
+      }
+
+      if (originalKeyPath === undefined) {
+        delete process.env.GITHUB_APP_PRIVATE_KEY_PATH;
+      } else {
+        process.env.GITHUB_APP_PRIVATE_KEY_PATH = originalKeyPath;
+      }
+
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("polls PR lifecycle state and persists merged metadata", async () => {
+    const remoteRepo = await prepareMavenRepo({ repoName: "code-porter-int-pr-poller-remote" });
+    cleanupPaths.push(remoteRepo);
+    const remoteDefaultBranch = await runGitStdout(remoteRepo, [
+      "rev-parse",
+      "--abbrev-ref",
+      "HEAD"
+    ]);
+
+    const originalToken = process.env.GITHUB_TOKEN;
+    process.env.GITHUB_TOKEN = "integration-token";
+    const realFetch = global.fetch;
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = (init?.method ?? "GET").toUpperCase();
+
+      if (url.startsWith("http://127.0.0.1")) {
+        return realFetch(input, init);
+      }
+
+      if (url.includes("api.github.com/repos/Coreledger-tech/code-porter/pulls") && method === "POST") {
+        return new Response(
+          JSON.stringify({
+            html_url: "https://github.com/Coreledger-tech/code-porter/pull/789",
+            number: 789
+          }),
+          {
+            status: 201,
+            headers: { "content-type": "application/json" }
+          }
+        );
+      }
+
+      if (url.includes("api.github.com/repos/Coreledger-tech/code-porter/pulls/789")) {
+        return new Response(
+          JSON.stringify({
+            number: 789,
+            state: "closed",
+            merged_at: "2026-02-26T00:10:00.000Z",
+            closed_at: "2026-02-26T00:10:00.000Z",
+            created_at: "2026-02-25T00:00:00.000Z"
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" }
+          }
+        );
+      }
+
+      return new Response(JSON.stringify({ default_branch: "main" }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const project = await apiFetch<{ id: string }>(baseUrl, "/projects/github", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "github-pr-poller-integration",
+          owner: "Coreledger-tech",
+          repo: "code-porter",
+          cloneUrl: remoteRepo,
+          defaultBranch: remoteDefaultBranch
+        })
+      });
+
+      const campaign = await apiFetch<{ id: string }>(baseUrl, "/campaigns", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: project.id,
+          policyId: "default",
+          recipePack: "java-maven-core",
+          targetSelector: remoteDefaultBranch
+        })
+      });
+
+      const applyStart = await apiFetch<{ runId: string; status: string }>(
+        baseUrl,
+        `/campaigns/${campaign.id}/apply`,
+        { method: "POST" }
+      );
+      expect(applyStart.status).toBe("queued");
+
+      await waitForRunTerminal({
+        baseUrl,
+        runId: applyStart.runId
+      });
+
+      const poller = new PrLifecyclePollerWorker({
+        batchSize: 10,
+        timeoutMs: 2_000
+      });
+      const updated = await poller.pollOnce();
+      expect(updated).toBeGreaterThan(0);
+
+      const run = await apiFetch<{
+        id: string;
+        prUrl: string | null;
+        prNumber: number | null;
+        prState: string | null;
+        mergedAt: string | null;
+      }>(baseUrl, `/runs/${applyStart.runId}`);
+
+      expect(run.prUrl).toBe("https://github.com/Coreledger-tech/code-porter/pull/789");
+      expect(run.prNumber).toBe(789);
+      expect(run.prState).toBe("merged");
+      expect(run.mergedAt).toBeTruthy();
+
+      const campaignSummary = await apiFetch<{
+        recentRuns: Array<{ runId: string; mergeState: string; prState: string | null }>;
+      }>(baseUrl, `/campaigns/${campaign.id}/summary`);
+
+      const recent = campaignSummary.recentRuns.find((item) => item.runId === applyStart.runId);
+      expect(recent).toBeTruthy();
+      expect(recent?.mergeState).toBe("merged");
+      expect(recent?.prState).toBe("merged");
+    } finally {
+      if (originalToken === undefined) {
+        delete process.env.GITHUB_TOKEN;
+      } else {
+        process.env.GITHUB_TOKEN = originalToken;
+      }
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("returns pilot report aggregates with offender ranking", async () => {
+    const repoPath = await prepareMavenRepo({ repoName: "code-porter-int-report" });
+    cleanupPaths.push(repoPath);
+
+    const project = await apiFetch<{ id: string }>(baseUrl, "/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "integration-report-project",
+        localPath: repoPath
+      })
+    });
+
+    const campaign = await apiFetch<{ id: string }>(baseUrl, "/campaigns", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectId: project.id,
+        policyId: "default",
+        recipePack: "java-maven-core"
+      })
+    });
+
+    const runIds = Array.from({ length: 5 }, () => randomUUID());
+
+    await queryDb(
+      `insert into runs (
+         id, campaign_id, mode, status, confidence_score, evidence_path, branch_name, pr_url,
+         pr_number, pr_state, pr_opened_at, merged_at, closed_at, summary, started_at, finished_at
+       ) values
+       ($1, $6, 'apply', 'completed', 80, null, null, 'https://github.com/acme/demo/pull/1',
+         1, 'merged', now() - interval '48 hours', now() - interval '24 hours', now() - interval '24 hours',
+         '{}'::jsonb, now() - interval '49 hours', now() - interval '23 hours'),
+       ($2, $6, 'apply', 'blocked', null, null, null, 'https://github.com/acme/demo/pull/2',
+         2, 'closed', now() - interval '50 hours', null, now() - interval '20 hours',
+         '{\"failureKind\":\"artifact_resolution\"}'::jsonb, now() - interval '51 hours', now() - interval '19 hours'),
+       ($3, $6, 'apply', 'blocked', null, null, null, null,
+         null, null, null, null, null,
+         '{\"failureKind\":\"artifact_resolution\"}'::jsonb, now() - interval '30 hours', now() - interval '29 hours'),
+       ($4, $6, 'apply', 'needs_review', 65, null, null, 'https://github.com/acme/demo/pull/3',
+         3, 'open', now() - interval '5 hours', null, null,
+         '{\"failureKind\":\"code_failure\"}'::jsonb, now() - interval '6 hours', now() - interval '4 hours'),
+       ($5, $6, 'plan', 'completed', 90, null, null, null,
+         null, null, null, null, null,
+         '{}'::jsonb, now() - interval '10 hours', now() - interval '9 hours')`,
+      [runIds[0], runIds[1], runIds[2], runIds[3], runIds[4], campaign.id]
+    );
+
+    await queryDb(
+      `insert into run_jobs (
+         run_id, campaign_id, mode, status, attempt_count, attempts, max_attempts,
+         next_attempt_at, available_at, created_at, updated_at
+       ) values
+       ($1, $6, 'apply', 'completed', 1, 1, 3, now(), now(), now(), now()),
+       ($2, $6, 'apply', 'completed', 2, 2, 3, now(), now(), now(), now()),
+       ($3, $6, 'apply', 'completed', 1, 1, 3, now(), now(), now(), now()),
+       ($4, $6, 'apply', 'completed', 2, 2, 3, now(), now(), now(), now()),
+       ($5, $6, 'plan', 'completed', 1, 1, 3, now(), now(), now(), now())`,
+      [runIds[0], runIds[1], runIds[2], runIds[3], runIds[4], campaign.id]
+    );
+
+    const report = await apiFetch<{
+      window: string;
+      totalsByStatus: Record<string, number>;
+      prOutcomes: { opened: number; merged: number; mergeRate: number };
+      retryRate: { retriedRuns: number; totalRuns: number; rate: number };
+      worstOffendersByProject: Array<{
+        projectId: string;
+        blockedRate: number;
+        topFailureKind: string;
+      }>;
+    }>(baseUrl, "/reports/pilot?window=30d");
+
+    expect(report.window).toBe("30d");
+    expect(report.totalsByStatus.completed).toBe(2);
+    expect(report.totalsByStatus.blocked).toBe(2);
+    expect(report.prOutcomes.opened).toBe(3);
+    expect(report.prOutcomes.merged).toBe(1);
+    expect(report.prOutcomes.mergeRate).toBeCloseTo(1 / 3);
+    expect(report.retryRate.retriedRuns).toBe(2);
+    expect(report.retryRate.totalRuns).toBe(5);
+    expect(report.retryRate.rate).toBeCloseTo(0.4);
+    expect(report.worstOffendersByProject.length).toBe(1);
+    expect(report.worstOffendersByProject[0]).toMatchObject({
+      projectId: project.id,
+      topFailureKind: "artifact_resolution"
+    });
+
+    const invalid = await apiFetchRaw(baseUrl, "/reports/pilot?window=90d");
+    expect(invalid.status).toBe(400);
+  });
+
+  it("executes a queued run only once when two workers are active", async () => {
+    const repoPath = await prepareMavenRepo({ repoName: "code-porter-int-two-workers" });
+    cleanupPaths.push(repoPath);
+
+    const project = await apiFetch<{ id: string }>(baseUrl, "/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "integration-two-workers",
+        localPath: repoPath
+      })
+    });
+
+    const campaign = await apiFetch<{ id: string }>(baseUrl, "/campaigns", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectId: project.id,
+        policyId: "default",
+        recipePack: "java-maven-core"
+      })
+    });
+
+    const secondWorker = new AsyncRunWorker({
+      workerId: "integration-worker-2",
+      pollMs: 50,
+      concurrency: 1
+    });
+    const secondWorkerPromise = secondWorker.start();
+
+    try {
+      const applyStart = await apiFetch<{ runId: string; status: string }>(
+        baseUrl,
+        `/campaigns/${campaign.id}/apply`,
+        { method: "POST" }
+      );
+      expect(applyStart.status).toBe("queued");
+
+      await waitForRunTerminal({
+        baseUrl,
+        runId: applyStart.runId
+      });
+
+      const events = await apiFetch<{
+        events: Array<{ eventType: string; message: string }>;
+      }>(baseUrl, `/runs/${applyStart.runId}/events?limit=500`);
+
+      const workerStartEvents = events.events.filter((event) =>
+        event.eventType === "lifecycle" && event.message === "Worker started run execution"
+      );
+      expect(workerStartEvents).toHaveLength(1);
+    } finally {
+      secondWorker.stop();
+      await Promise.race([
+        secondWorkerPromise,
+        sleep(5000)
+      ]);
+    }
+  });
+
+  it("reclaims an expired lease and completes the run on a retry claim", async () => {
+    const repoPath = await prepareMavenRepo({ repoName: "code-porter-int-lease-reclaim" });
+    cleanupPaths.push(repoPath);
+
+    worker.stop();
+    await Promise.race([
+      workerPromise,
+      sleep(5000)
+    ]);
+
+    const project = await apiFetch<{ id: string }>(baseUrl, "/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "integration-lease-reclaim",
+        localPath: repoPath
+      })
+    });
+
+    const campaign = await apiFetch<{ id: string }>(baseUrl, "/campaigns", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectId: project.id,
+        policyId: "default",
+        recipePack: "java-maven-core"
+      })
+    });
+
+    const applyStart = await apiFetch<{ runId: string; status: string }>(
+      baseUrl,
+      `/campaigns/${campaign.id}/apply`,
+      { method: "POST" }
+    );
+    expect(applyStart.status).toBe("queued");
+
+    await queryDb(
+      `update run_jobs
+       set status = 'running',
+           attempt_count = 1,
+           attempts = 1,
+           lease_owner = 'stale-worker',
+           leased_at = now() - make_interval(secs => 600),
+           lease_expires_at = now() - make_interval(secs => 60),
+           locked_by = 'stale-worker',
+           locked_at = now() - make_interval(secs => 600),
+           next_attempt_at = now() - make_interval(secs => 60),
+           available_at = now() - make_interval(secs => 60)
+       where run_id = $1`,
+      [applyStart.runId]
+    );
+    await queryDb(
+      `update runs
+       set status = 'running'
+       where id = $1`,
+      [applyStart.runId]
+    );
+
+    const reclaimWorker = new AsyncRunWorker({
+      workerId: "integration-reclaim-worker",
+      pollMs: 50,
+      concurrency: 1
+    });
+    const reclaimWorkerPromise = reclaimWorker.start();
+
+    try {
+      await waitForRunTerminal({
+        baseUrl,
+        runId: applyStart.runId
+      });
+    } finally {
+      reclaimWorker.stop();
+      await Promise.race([
+        reclaimWorkerPromise,
+        sleep(5000)
+      ]);
+    }
+
+    const attempts = await queryDb<{ attempt_count: number }>(
+      `select attempt_count
+       from run_jobs
+       where run_id = $1`,
+      [applyStart.runId]
+    );
+    expect(Number(attempts.rows[0]?.attempt_count ?? 0)).toBeGreaterThanOrEqual(2);
+
+    const metricsResponse = await apiFetchRaw(baseUrl, "/metrics");
+    const metricsText = await metricsResponse.text();
+    const reclaimMetric = metricsText.match(
+      /^codeporter_queue_lease_reclaims_total\s+([0-9.]+)$/m
+    );
+    expect(reclaimMetric).toBeTruthy();
+    expect(Number(reclaimMetric?.[1] ?? 0)).toBeGreaterThan(0);
   });
 });

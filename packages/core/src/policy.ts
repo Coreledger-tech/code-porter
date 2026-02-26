@@ -22,6 +22,8 @@ const DEFAULT_POLICY: PolicyConfig = {
   maxChangeLines: 300,
   maxFilesChanged: 10,
   requireTestsIfPresent: true,
+  maxInflightRunsPerProject: 2,
+  maxInflightRunsGlobal: 10,
   allowedBuildSystems: ["maven", "gradle", "node"],
   verifyFailureMode: "deny",
   verify: {
@@ -49,6 +51,14 @@ function asNumber(value: unknown, fallback: number): number {
     return value;
   }
   return fallback;
+}
+
+function asPositiveInt(value: unknown, fallback: number): number {
+  const parsed = asNumber(value, fallback);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return Math.floor(parsed);
 }
 
 function asBoolean(value: unknown, fallback: boolean): boolean {
@@ -173,6 +183,14 @@ function normalizePolicy(raw: unknown): PolicyConfig {
     requireTestsIfPresent: asBoolean(
       config.requireTestsIfPresent,
       DEFAULT_POLICY.requireTestsIfPresent
+    ),
+    maxInflightRunsPerProject: asPositiveInt(
+      config.maxInflightRunsPerProject,
+      DEFAULT_POLICY.maxInflightRunsPerProject
+    ),
+    maxInflightRunsGlobal: asPositiveInt(
+      config.maxInflightRunsGlobal,
+      DEFAULT_POLICY.maxInflightRunsGlobal
     ),
     allowedBuildSystems: asStringArray(
       config.allowedBuildSystems,

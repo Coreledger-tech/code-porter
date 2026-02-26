@@ -8,8 +8,190 @@ services:
       POSTGRES_DB: code_porter
       POSTGRES_USER: code_porter
       POSTGRES_PASSWORD: code_porter
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U code_porter -d code_porter"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
     volumes:
       - code_porter_pg_data:/var/lib/postgresql/data
 
+  minio:
+    image: minio/minio:latest
+    container_name: code-porter-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY_ID:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_ACCESS_KEY:-minioadmin}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - code_porter_minio_data:/data
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: code-porter-minio-init
+    depends_on:
+      minio:
+        condition: service_started
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "until mc alias set local http://minio:9000 ${S3_ACCESS_KEY_ID:-minioadmin} ${S3_SECRET_ACCESS_KEY:-minioadmin}; do sleep 1; done;
+       mc mb -p local/${S3_BUCKET:-code-porter-evidence} || true"
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: code-porter-migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    environment:
+      PORT: ${PORT:-3000}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://code_porter:code_porter@postgres:5432/code_porter}
+      POLICY_DEFAULT_PATH: ${POLICY_DEFAULT_PATH:-./policies/default.yaml}
+    command: ["npm", "run", "db:migrate"]
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: code-porter-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      PORT: ${PORT:-3000}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://code_porter:code_porter@postgres:5432/code_porter}
+      POLICY_DEFAULT_PATH: ${POLICY_DEFAULT_PATH:-./policies/default.yaml}
+      RUN_WORKER_POLL_MS: ${RUN_WORKER_POLL_MS:-1000}
+      RUN_WORKER_CONCURRENCY: ${RUN_WORKER_CONCURRENCY:-1}
+      RUN_JOB_LEASE_SECONDS: ${RUN_JOB_LEASE_SECONDS:-300}
+      RUN_JOB_HEARTBEAT_SECONDS: ${RUN_JOB_HEARTBEAT_SECONDS:-30}
+      RUN_JOB_BACKOFF_BASE_SECONDS: ${RUN_JOB_BACKOFF_BASE_SECONDS:-15}
+      RUN_JOB_BACKOFF_MAX_SECONDS: ${RUN_JOB_BACKOFF_MAX_SECONDS:-300}
+      PR_POLL_INTERVAL_MS: ${PR_POLL_INTERVAL_MS:-60000}
+      PR_POLL_BATCH_SIZE: ${PR_POLL_BATCH_SIZE:-100}
+      PR_POLL_TIMEOUT_MS: ${PR_POLL_TIMEOUT_MS:-3000}
+      WORKSPACE_ROOT: ${WORKSPACE_ROOT:-./workspaces}
+      WORKSPACE_CLEANUP_POLICY: ${WORKSPACE_CLEANUP_POLICY:-delete_on_success_keep_on_failure}
+      EVIDENCE_STORE_MODE: ${EVIDENCE_STORE_MODE:-local}
+      EVIDENCE_ROOT: ${EVIDENCE_ROOT:-./evidence}
+      EVIDENCE_EXPORT_ROOT: ${EVIDENCE_EXPORT_ROOT:-./evidence-exports}
+      EVIDENCE_KEEP_LOCAL_DISK: ${EVIDENCE_KEEP_LOCAL_DISK:-true}
+      EVIDENCE_CACHE_TTL_DAYS: ${EVIDENCE_CACHE_TTL_DAYS:-7}
+      EVIDENCE_URL_MODE: ${EVIDENCE_URL_MODE:-signed}
+      EVIDENCE_SIGNED_URL_TTL_SECONDS: ${EVIDENCE_SIGNED_URL_TTL_SECONDS:-3600}
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
+      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-http://localhost:9000}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-code-porter-evidence}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-minioadmin}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-minioadmin}
+      S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-true}
+      BASE_URL: ${BASE_URL:-http://localhost:3000}
+      GITHUB_AUTH_MODE: ${GITHUB_AUTH_MODE:-pat}
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+      GITHUB_APP_INSTALLATION_ID: ${GITHUB_APP_INSTALLATION_ID:-}
+      GITHUB_APP_PRIVATE_KEY_PATH: ${GITHUB_APP_PRIVATE_KEY_PATH:-}
+      GITHUB_API_URL: ${GITHUB_API_URL:-https://api.github.com}
+      SUMMARY_GITHUB_LOOKUP_TIMEOUT_MS: ${SUMMARY_GITHUB_LOOKUP_TIMEOUT_MS:-1500}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    ports:
+      - "${PORT:-3000}:3000"
+    volumes:
+      - ./workspaces:/app/workspaces
+      - ./evidence:/app/evidence
+      - ./evidence-exports:/app/evidence-exports
+    command: ["npm", "run", "api:start"]
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: code-porter-worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://code_porter:code_porter@postgres:5432/code_porter}
+      POLICY_DEFAULT_PATH: ${POLICY_DEFAULT_PATH:-./policies/default.yaml}
+      RUN_WORKER_POLL_MS: ${RUN_WORKER_POLL_MS:-1000}
+      RUN_WORKER_CONCURRENCY: ${RUN_WORKER_CONCURRENCY:-1}
+      RUN_JOB_LEASE_SECONDS: ${RUN_JOB_LEASE_SECONDS:-300}
+      RUN_JOB_HEARTBEAT_SECONDS: ${RUN_JOB_HEARTBEAT_SECONDS:-30}
+      RUN_JOB_BACKOFF_BASE_SECONDS: ${RUN_JOB_BACKOFF_BASE_SECONDS:-15}
+      RUN_JOB_BACKOFF_MAX_SECONDS: ${RUN_JOB_BACKOFF_MAX_SECONDS:-300}
+      PR_POLL_INTERVAL_MS: ${PR_POLL_INTERVAL_MS:-60000}
+      PR_POLL_BATCH_SIZE: ${PR_POLL_BATCH_SIZE:-100}
+      PR_POLL_TIMEOUT_MS: ${PR_POLL_TIMEOUT_MS:-3000}
+      WORKSPACE_ROOT: ${WORKSPACE_ROOT:-./workspaces}
+      WORKSPACE_CLEANUP_POLICY: ${WORKSPACE_CLEANUP_POLICY:-delete_on_success_keep_on_failure}
+      EVIDENCE_STORE_MODE: ${EVIDENCE_STORE_MODE:-local}
+      EVIDENCE_ROOT: ${EVIDENCE_ROOT:-./evidence}
+      EVIDENCE_EXPORT_ROOT: ${EVIDENCE_EXPORT_ROOT:-./evidence-exports}
+      EVIDENCE_KEEP_LOCAL_DISK: ${EVIDENCE_KEEP_LOCAL_DISK:-true}
+      EVIDENCE_CACHE_TTL_DAYS: ${EVIDENCE_CACHE_TTL_DAYS:-7}
+      EVIDENCE_URL_MODE: ${EVIDENCE_URL_MODE:-signed}
+      EVIDENCE_SIGNED_URL_TTL_SECONDS: ${EVIDENCE_SIGNED_URL_TTL_SECONDS:-3600}
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
+      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-http://localhost:9000}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-code-porter-evidence}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-minioadmin}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-minioadmin}
+      S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-true}
+      GITHUB_AUTH_MODE: ${GITHUB_AUTH_MODE:-pat}
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+      GITHUB_APP_INSTALLATION_ID: ${GITHUB_APP_INSTALLATION_ID:-}
+      GITHUB_APP_PRIVATE_KEY_PATH: ${GITHUB_APP_PRIVATE_KEY_PATH:-}
+      GITHUB_API_URL: ${GITHUB_API_URL:-https://api.github.com}
+      SUMMARY_GITHUB_LOOKUP_TIMEOUT_MS: ${SUMMARY_GITHUB_LOOKUP_TIMEOUT_MS:-1500}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    volumes:
+      - ./workspaces:/app/workspaces
+      - ./evidence:/app/evidence
+      - ./evidence-exports:/app/evidence-exports
+    command: ["npm", "run", "worker:start"]
+
+  pr-poller:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: code-porter-pr-poller
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://code_porter:code_porter@postgres:5432/code_porter}
+      POLICY_DEFAULT_PATH: ${POLICY_DEFAULT_PATH:-./policies/default.yaml}
+      PR_POLL_INTERVAL_MS: ${PR_POLL_INTERVAL_MS:-60000}
+      PR_POLL_BATCH_SIZE: ${PR_POLL_BATCH_SIZE:-100}
+      PR_POLL_TIMEOUT_MS: ${PR_POLL_TIMEOUT_MS:-3000}
+      GITHUB_AUTH_MODE: ${GITHUB_AUTH_MODE:-pat}
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+      GITHUB_APP_INSTALLATION_ID: ${GITHUB_APP_INSTALLATION_ID:-}
+      GITHUB_APP_PRIVATE_KEY_PATH: ${GITHUB_APP_PRIVATE_KEY_PATH:-}
+      GITHUB_API_URL: ${GITHUB_API_URL:-https://api.github.com}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    command: ["npm", "run", "pr-poller:start"]
+
 volumes:
   code_porter_pg_data:
+  code_porter_minio_data:

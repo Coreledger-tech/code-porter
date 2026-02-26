@@ -20,6 +20,7 @@ import type {
   EvidenceStorePort,
   EvidenceWriterPort,
   KnowledgePublisherPort,
+  RemediationAction,
   RecipeEnginePort,
   VerifierPort,
   WorkflowExecutionResult
@@ -148,7 +149,25 @@ export async function executeWorkflow(input: {
   evidenceStore: EvidenceStorePort;
   knowledgePublisher?: KnowledgePublisherPort;
   remediator?: DeterministicRemediator;
+  onStepEvent?: (event: {
+    eventType: "step_start" | "step_end" | "warning" | "error";
+    step: string;
+    message: string;
+    payload?: Record<string, unknown>;
+  }) => Promise<void> | void;
 }): Promise<WorkflowExecutionResult> {
+  async function emit(event: {
+    eventType: "step_start" | "step_end" | "warning" | "error";
+    step: string;
+    message: string;
+    payload?: Record<string, unknown>;
+  }): Promise<void> {
+    if (!input.onStepEvent) {
+      return;
+    }
+    await input.onStepEvent(event);
+  }
+
   const runContext = {
     projectId: input.project.id,
     campaignId: input.campaign.id,
@@ -167,9 +186,28 @@ export async function executeWorkflow(input: {
     workspace: input.workspace
   });
 
+  await emit({
+    eventType: "step_start",
+    step: "scan",
+    message: "Starting repository scan"
+  });
   const scanResult = await runScanStep(input.workingRepoPath);
   await input.evidenceWriter.write(runContext, "scan.json", scanResult);
+  await emit({
+    eventType: "step_end",
+    step: "scan",
+    message: "Repository scan complete",
+    payload: {
+      buildSystem: scanResult.buildSystem,
+      hasTests: scanResult.hasTests
+    }
+  });
 
+  await emit({
+    eventType: "step_start",
+    step: "plan",
+    message: "Planning deterministic changes"
+  });
   const files = await loadCandidateFiles(input.workingRepoPath);
   const { planResult, planMetrics } = runPlanStep({
     scan: scanResult,
@@ -177,6 +215,15 @@ export async function executeWorkflow(input: {
     recipeEngine: input.recipeEngine
   });
   await input.evidenceWriter.write(runContext, "plan.json", planResult);
+  await emit({
+    eventType: "step_end",
+    step: "plan",
+    message: "Plan stage complete",
+    payload: {
+      filesChanged: planMetrics.filesChanged,
+      linesChanged: planMetrics.linesChanged
+    }
+  });
 
   const policyDecisions: PolicyDecision[] = policyEngine.evaluatePlan(planMetrics, policy);
 
@@ -185,11 +232,17 @@ export async function executeWorkflow(input: {
   let branchName: string | undefined = input.workspace.branchName;
   let applySummary: Record<string, unknown> | undefined;
   let verifySummary: VerifySummary;
+  let remediationActions: RemediationAction[] = [];
   let commitAfter: string | undefined;
 
   const planBlocking = hasBlockingDecision(policyDecisions);
 
   if (input.mode === "apply" && !planBlocking) {
+    await emit({
+      eventType: "step_start",
+      step: "apply",
+      message: "Applying deterministic recipes"
+    });
     const applyStepResult = await runApplyStep({
       repoPath: input.workingRepoPath,
       campaignId: input.campaign.id,
@@ -225,7 +278,21 @@ export async function executeWorkflow(input: {
         applyStepResult.patch
       );
     }
+    await emit({
+      eventType: "step_end",
+      step: "apply",
+      message: "Apply stage complete",
+      payload: {
+        changedFiles: applyStepResult.changedFiles,
+        changedLines: applyStepResult.changedLines
+      }
+    });
 
+    await emit({
+      eventType: "step_start",
+      step: "verify",
+      message: "Running verifier checks"
+    });
     verifySummary = await input.verifier.run(scanResult, input.workingRepoPath, policy);
 
     if (input.remediator) {
@@ -246,7 +313,7 @@ export async function executeWorkflow(input: {
             actions: [
               {
                 action: "deterministic_remediation",
-                status: "skipped",
+                status: "skipped" as const,
                 reason: "Remediator not applicable"
               }
             ],
@@ -255,8 +322,19 @@ export async function executeWorkflow(input: {
           };
 
       verifySummary = remediation.verifySummary;
+      remediationActions = remediation.actions;
       await input.evidenceWriter.write(runContext, "agentic-remediation.json", remediation);
     }
+    await emit({
+      eventType: "step_end",
+      step: "verify",
+      message: "Verifier stage complete",
+      payload: {
+        compile: verifySummary.compile.status,
+        tests: verifySummary.tests.status,
+        staticChecks: verifySummary.staticChecks.status
+      }
+    });
   } else {
     if (input.mode === "apply" && planBlocking) {
       applySummary = {
@@ -264,6 +342,11 @@ export async function executeWorkflow(input: {
         reason: "apply blocked by plan/scan policy decisions"
       };
       await input.evidenceWriter.write(runContext, "apply.json", applySummary);
+      await emit({
+        eventType: "warning",
+        step: "apply",
+        message: "Apply skipped due to blocking plan policy decisions"
+      });
     }
 
     verifySummary = verifyForPlanMode(scanResult.buildSystem, scanResult.hasTests);
@@ -350,7 +433,42 @@ export async function executeWorkflow(input: {
     workspace: workspaceSummary
   });
 
+  await emit({
+    eventType: "step_start",
+    step: "evidence_finalize",
+    message: "Finalizing evidence artifacts"
+  });
   const evidenceResult = await input.evidenceStore.finalizeAndExport(runContext);
+  const mergedExports = [
+    ...(evidenceResult.manifest.exports ?? []),
+    ...(evidenceResult.exports ?? [])
+  ];
+  const dedupedExports = mergedExports.filter((artifact, index) => {
+    return (
+      mergedExports.findIndex(
+        (candidate) =>
+          candidate.type === artifact.type &&
+          candidate.path === artifact.path &&
+          candidate.sha256 === artifact.sha256
+      ) === index
+    );
+  });
+  const manifest =
+    dedupedExports.length > 0
+      ? {
+          ...evidenceResult.manifest,
+          exports: dedupedExports
+        }
+      : evidenceResult.manifest;
+  await emit({
+    eventType: "step_end",
+    step: "evidence_finalize",
+    message: "Evidence finalized",
+    payload: {
+      artifactCount: manifest.artifacts.length,
+      exportCount: manifest.exports?.length ?? 0
+    }
+  });
 
   return {
     status,
@@ -360,6 +478,8 @@ export async function executeWorkflow(input: {
     evidenceZip: evidenceResult.zip,
     summary,
     policyDecisions,
-    manifest: evidenceResult.manifest
+    manifest,
+    verifySummary,
+    remediationActions
   };
 }

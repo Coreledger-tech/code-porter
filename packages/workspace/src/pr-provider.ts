@@ -1,5 +1,9 @@
 import type { PRProviderPort } from "@code-porter/core/src/workflow-runner.js";
 import type { Project } from "@code-porter/core/src/models.js";
+import {
+  createGitHubAuthProvider,
+  type GitHubAuthProvider
+} from "./auth-provider.js";
 import { GitCommandError, isAuthLikeFailure, runGit } from "./git.js";
 import { RepoOperationError } from "./repo-provider.js";
 
@@ -72,6 +76,12 @@ async function pushBranch(workspacePath: string, branchName: string): Promise<vo
 }
 
 export class GitHubPRProvider implements PRProviderPort {
+  constructor(
+    private readonly authProvider: GitHubAuthProvider = createGitHubAuthProvider(),
+    private readonly apiUrl: string = process.env.GITHUB_API_URL?.trim() ||
+      "https://api.github.com"
+  ) {}
+
   async createPullRequest(input: {
     project: Project;
     workspacePath: string;
@@ -84,7 +94,7 @@ export class GitHubPRProvider implements PRProviderPort {
     recipesApplied: string[];
     confidenceScore: number | null;
     blockedReason?: string;
-  }): Promise<{ prUrl: string }> {
+  }): Promise<{ prUrl: string; prNumber?: number | null }> {
     if (input.project.type !== "github") {
       throw new RepoOperationError(
         "GitHub PR provider requires a github project",
@@ -92,17 +102,21 @@ export class GitHubPRProvider implements PRProviderPort {
       );
     }
 
-    const token = process.env.GITHUB_TOKEN;
-    if (!token) {
+    let token: string;
+    try {
+      token = await this.authProvider.getToken();
+    } catch (error) {
       throw new RepoOperationError(
-        "GitHub authentication token is missing (set GITHUB_TOKEN)",
+        error instanceof Error
+          ? error.message
+          : "GitHub authentication token is missing",
         "auth"
       );
     }
 
     await pushBranch(input.workspacePath, input.branchName);
 
-    const response = await fetch(`https://api.github.com/repos/${repoApiPath(input.project)}/pulls`, {
+    const response = await fetch(`${this.apiUrl.replace(/\/+$/, "")}/repos/${repoApiPath(input.project)}/pulls`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -139,7 +153,7 @@ export class GitHubPRProvider implements PRProviderPort {
       );
     }
 
-    const payload = (await response.json()) as { html_url?: string };
+    const payload = (await response.json()) as { html_url?: string; number?: number };
     if (!payload.html_url) {
       throw new RepoOperationError(
         "GitHub pull request response missing html_url",
@@ -147,6 +161,9 @@ export class GitHubPRProvider implements PRProviderPort {
       );
     }
 
-    return { prUrl: payload.html_url };
+    return {
+      prUrl: payload.html_url,
+      prNumber: Number.isInteger(payload.number) ? payload.number : null
+    };
   }
 }

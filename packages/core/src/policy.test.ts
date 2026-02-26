@@ -12,6 +12,8 @@ describe("YamlPolicyEngine", () => {
     expect(policy.maxChangeLines).toBe(300);
     expect(policy.maxFilesChanged).toBe(10);
     expect(policy.allowedBuildSystems).toContain("maven");
+    expect(policy.maxInflightRunsPerProject).toBe(2);
+    expect(policy.maxInflightRunsGlobal).toBe(10);
     expect(policy.verifyFailureMode).toBe("warn");
     expect(policy.verify.blockingFailureKinds).toEqual(["code_failure"]);
     expect(policy.verify.nonBlockingFailureKinds).toContain("artifact_resolution");
@@ -127,5 +129,7 @@ describe("YamlPolicyEngine", () => {
 
     expect(policy.verify.blockingFailureKinds).toEqual(["code_failure"]);
     expect(policy.verify.nonBlockingFailureKinds).toContain("unknown");
+    expect(policy.maxInflightRunsPerProject).toBe(2);
+    expect(policy.maxInflightRunsGlobal).toBe(10);
   });
 });

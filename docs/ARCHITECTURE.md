@@ -3,63 +3,88 @@
 ## Module Diagram
 ```mermaid
 flowchart LR
-  API[apps/api] --> SVC[workflow-service]
-  SVC --> WM[packages/workspace WorkspaceManager]
-  WM --> RP[RepoProvider]
-  RP --> LRP[LocalRepoProvider]
-  RP --> GRP[GitHubRepoProvider]
-  SVC --> CORE[packages/core Workflow]
-  CORE --> REC[packages/recipes RecipeEngine]
-  CORE --> VER[packages/verifier Verifier]
-  CORE --> POL[packages/core PolicyEngine]
-  CORE --> EW[packages/evidence EvidenceWriter]
-  SVC --> ES[EvidenceStore]
-  ES --> LES[LocalEvidenceStore]
-  ES --> ZES[ZipEvidenceStore]
-  ES -. future .-> SES[S3EvidenceStore stub]
-  SVC --> PR[PRProvider]
-  PR --> GPR[GitHubPRProvider]
-  SVC --> KNOW[packages/knowledge Stub]
-  SVC -. optional .-> DBOS[packages/workflow-runner-dbos Stub]
+  API["apps/api"] --> SVC["workflow-service"]
+  SVC --> POL["PolicyEngine"]
+  SVC --> THROTTLE["Inflight Throttle Gate"]
+  SVC --> RP["RepoProvider"]
+  RP --> LRP["LocalRepoProvider"]
+  RP --> GRP["GitHubRepoProvider"]
+  SVC --> WM["WorkspaceManager"]
+  SVC --> CORE["packages/core Workflow"]
+  CORE --> REC["packages/recipes"]
+  CORE --> VER["packages/verifier"]
+  CORE --> REM["Deterministic Remediator"]
+  CORE --> EW["FileEvidenceWriter"]
+  SVC --> ES["EvidenceStore"]
+  ES --> LES["LocalEvidenceStore"]
+  ES --> ZES["ZipEvidenceStore"]
+  ES --> SES["S3CompatibleEvidenceStore"]
+  SVC --> PR["PRProvider"]
+  PR --> GPR["GitHubPRProvider"]
+  API --> RUNS["/runs routes"]
+  RUNS --> URLS["Evidence URL Resolver"]
+  URLS --> S3["MinIO/S3"]
+  SVC --> KNOW["Knowledge Publisher Stub"]
+  SVC -. optional .-> DBOS["DBOS Runner Stub"]
 ```
 
-## V1 Alpha Runtime Flow
+## V1 Beta Runtime Flow
 ```mermaid
 sequenceDiagram
   participant API as API
   participant SVC as Workflow Service
-  participant RP as RepoProvider
-  participant WM as WorkspaceManager
+  participant POL as Policy Engine
+  participant RP as Repo Provider
+  participant WM as Workspace Manager
   participant WF as Core Workflow
-  participant ES as EvidenceStore
-  participant PR as PRProvider
+  participant ES as Evidence Store
+  participant OBJ as S3/MinIO
+  participant PR as PR Provider
 
-  API->>SVC: start run
-  SVC->>RP: prepareWorkspace(project, run)
-  RP-->>SVC: workspacePath + base metadata
-  SVC->>WM: createBranch (apply mode)
-  SVC->>WF: execute scan/plan/apply/verify in workspace
-  WF-->>SVC: status + manifest + summary
-  SVC->>ES: finalizeAndExport(runCtx)
-  ES-->>SVC: manifest + evidence.zip metadata
-  alt github project and apply mode
-    SVC->>PR: push branch and open PR
-    PR-->>SVC: prUrl
+  API->>SVC: start plan/apply
+  SVC->>POL: load policy + check inflight limits
+  alt limits exceeded
+    SVC-->>API: 429 throttle response
+  else allowed
+    SVC->>RP: prepare workspace
+    RP-->>SVC: workspace metadata
+    opt apply mode
+      SVC->>WM: create branch
+    end
+    SVC->>WF: scan -> plan -> apply -> verify
+    WF-->>SVC: status + summary + manifest
+    SVC->>ES: finalize and export evidence
+    ES->>OBJ: upload evidence.zip + manifest.json (s3 mode)
+    opt github apply
+      SVC->>PR: push branch + open PR
+      PR-->>SVC: prUrl
+    end
+    SVC->>WM: cleanup workspace (policy)
+    SVC-->>API: runId + status
   end
-  SVC->>WM: cleanup workspace
-  SVC-->>API: run status + evidence links (+ prUrl)
+
+  API->>API: GET /runs/:id resolves evidence URLs (signed/public/local)
 ```
 
 ## Responsibilities
-- `apps/api`: REST endpoints, request validation, DB persistence orchestration, file download route.
-- `packages/core`: workflow contracts, stage sequencing, policy checks, scoring, run summary generation.
-- `packages/recipes`: deterministic transformations and planning.
-- `packages/verifier`: tool detection and command execution for build/test/static checks and failure classification.
-- `packages/evidence`: evidence artifact writing, manifest generation, zip export store.
-- `packages/workspace`: ephemeral workspace lifecycle, git operations, repo providers, PR provider contracts.
-- `packages/workflow-runner-inmemory`: default immediate execution runner.
-- `packages/workflow-runner-dbos`: durable orchestration adapter stub.
-- `packages/knowledge`: future docs/context publication hook.
+- `apps/api`
+- HTTP routes, request validation, throttling response mapping, run/evidence URL responses.
+- `apps/api/workflow-service`
+- campaign run orchestration, DB persistence, policy throttling gates, provider wiring.
+- `packages/workspace`
+- isolated workspace lifecycle, local/github repo providers, branch preparation, cleanup.
+- `packages/core`
+- deterministic workflow stage sequencing, policy decisions, confidence scoring, run summaries.
+- `packages/recipes`
+- deterministic codemod recipes and engine ordering.
+- `packages/verifier`
+- build/test/static verification, failure classification, maven retry hardening.
+- `packages/evidence`
+- evidence write/finalize, zip export, S3-compatible upload, manifest export metadata.
+- `packages/knowledge`
+- optional run-summary publication stub.
+- `packages/workflow-runner-dbos`
+- durable execution adapter stub.
 
 ## Key Interfaces
 
@@ -69,14 +94,6 @@ interface RecipeEngine {
   listRecipeIds(): string[];
   plan(scan: ScanResult, files: FileMap): RecipePlanResult;
   apply(scan: ScanResult, files: FileMap): RecipeApplyResult;
-}
-```
-
-### WorkflowRunner
-```ts
-interface WorkflowRunner {
-  start(runRequest: RunRequest): Promise<{ runId: string }>;
-  get(runId: string): Promise<Run>;
 }
 ```
 
@@ -99,7 +116,7 @@ interface PolicyEngine {
 ### WorkspaceManager
 ```ts
 interface WorkspaceManager {
-  createWorkspace(input: WorkspaceCreateRequest): Promise<PreparedWorkspace>;
+  createWorkspace(runId: string): Promise<string>;
   ensureCleanTree(repoPath: string): Promise<void>;
   checkoutBase(repoPath: string, ref: string): Promise<{ ref: string; commit: string }>;
   createBranch(repoPath: string, campaignId: string, runId: string): Promise<string>;
@@ -119,7 +136,7 @@ interface RepoProvider {
 interface EvidenceStore {
   finalizeAndExport(runCtx: RunContext): Promise<{
     manifest: EvidenceManifest;
-    zip?: { path: string; sha256: string; size: number };
+    exports: EvidenceExportArtifact[];
   }>;
 }
 ```
@@ -133,12 +150,11 @@ interface PRProvider {
 
 ## Extension Points
 
-### Legacy Lanes (COBOL, Fortran)
-- Add lane-specific scanners behind `ScanStep` extension registry.
-- Add lane-specific translators/IR pipelines as separate packages with same workflow contract.
-- Reuse evidence, policy, and verifier gates for parity checks.
+### Legacy Lanes (COBOL, Fortran, PL/SQL)
+- Add lane-specific scanners/IR translators behind shared workflow stage interfaces.
+- Reuse policy, verifier gates, and evidence contract for parity and auditability.
 
 ### Agent Runners
-- Deterministic remediator runs after verify only for policy-allowed failure kinds.
-- Future agent runner can be inserted after deterministic remediator with constrained action policies.
-- Agent outputs must always be policy-gated and evidence-captured before acceptance.
+- Current constrained remediator only performs deterministic infrastructure remediation.
+- Future agent runner can be inserted after deterministic remediation with policy-allowed action sets.
+- Free-form edits remain out of scope unless explicitly enabled with stricter policy/evidence controls.

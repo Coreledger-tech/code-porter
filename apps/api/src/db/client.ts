@@ -11,9 +11,12 @@ export const dbPool = new Pool({
   connectionString
 });
 
-export async function query<T = unknown>(text: string, params?: unknown[]): Promise<{ rows: T[] }> {
+export async function query<T = unknown>(
+  text: string,
+  params?: unknown[]
+): Promise<{ rows: T[]; rowCount: number }> {
   const result = await dbPool.query(text, params);
-  return { rows: result.rows as T[] };
+  return { rows: result.rows as T[], rowCount: result.rowCount ?? 0 };
 }
 
 export async function closeDbPool(): Promise<void> {

@@ -31,6 +31,8 @@ describe("DefaultVerifier", () => {
         maxChangeLines: 100,
         maxFilesChanged: 10,
         requireTestsIfPresent: true,
+        maxInflightRunsPerProject: 2,
+        maxInflightRunsGlobal: 10,
         allowedBuildSystems: ["maven"],
         verifyFailureMode: "deny",
         verify: {

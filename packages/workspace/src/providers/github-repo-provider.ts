@@ -1,5 +1,12 @@
-import type { PreparedWorkspace } from "@code-porter/core/src/workflow-runner.js";
+import type {
+  PreparedWorkspace,
+  WorkspaceManagerPort
+} from "@code-porter/core/src/workflow-runner.js";
 import type { Project } from "@code-porter/core/src/models.js";
+import {
+  createGitHubAuthProvider,
+  type GitHubAuthProvider
+} from "../auth-provider.js";
 import { GitCommandError, isAuthLikeFailure, runGit } from "../git.js";
 import { BaseRepoProvider, RepoOperationError, type RepoPrepareInput } from "../repo-provider.js";
 
@@ -18,18 +25,26 @@ function authCloneUrl(publicUrl: string, token: string): string {
   return publicUrl;
 }
 
-async function fetchDefaultBranch(project: Project, token: string): Promise<string> {
+async function fetchDefaultBranch(input: {
+  project: Project;
+  token: string;
+  apiUrl: string;
+}): Promise<string> {
+  const { project, token, apiUrl } = input;
   if (!project.owner || !project.repo) {
     return "main";
   }
 
-  const response = await fetch(`https://api.github.com/repos/${project.owner}/${project.repo}`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: "application/vnd.github+json",
-      "User-Agent": "code-porter"
+  const response = await fetch(
+    `${apiUrl.replace(/\/+$/, "")}/repos/${project.owner}/${project.repo}`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "User-Agent": "code-porter"
+      }
     }
-  });
+  );
 
   if (response.status === 401 || response.status === 403) {
     throw new RepoOperationError(
@@ -47,6 +62,15 @@ async function fetchDefaultBranch(project: Project, token: string): Promise<stri
 }
 
 export class GitHubRepoProvider extends BaseRepoProvider {
+  constructor(
+    workspaceManager: WorkspaceManagerPort,
+    private readonly authProvider: GitHubAuthProvider = createGitHubAuthProvider(),
+    private readonly apiUrl: string = process.env.GITHUB_API_URL?.trim() ||
+      "https://api.github.com"
+  ) {
+    super(workspaceManager);
+  }
+
   async prepareWorkspace(input: RepoPrepareInput): Promise<PreparedWorkspace> {
     const project = input.project;
     if (project.type !== "github" || !project.owner || !project.repo) {
@@ -56,10 +80,14 @@ export class GitHubRepoProvider extends BaseRepoProvider {
       );
     }
 
-    const token = process.env.GITHUB_TOKEN;
-    if (!token) {
+    let token: string;
+    try {
+      token = await this.authProvider.getToken();
+    } catch (error) {
       throw new RepoOperationError(
-        "GitHub authentication token is missing (set GITHUB_TOKEN)",
+        error instanceof Error
+          ? error.message
+          : "GitHub authentication token is missing",
         "auth"
       );
     }
@@ -91,7 +119,13 @@ export class GitHubRepoProvider extends BaseRepoProvider {
       );
     }
 
-    const defaultBranch = project.defaultBranch ?? (await fetchDefaultBranch(project, token));
+    const defaultBranch =
+      project.defaultBranch ??
+      (await fetchDefaultBranch({
+        project,
+        token,
+        apiUrl: this.apiUrl
+      }));
     const resolvedBaseRef = input.baseRefHint ?? defaultBranch ?? "main";
     const checkout = await this.workspaceManager.checkoutBase(workspacePath, resolvedBaseRef);
 

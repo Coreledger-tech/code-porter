@@ -1,5 +1,6 @@
 import type {
   Campaign,
+  EvidenceStorage,
   PlanMetrics,
   PolicyConfig,
   PolicyDecision,
@@ -119,6 +120,9 @@ export interface EvidenceExportArtifact {
   path: string;
   sha256: string;
   size: number;
+  storageType?: EvidenceStorage;
+  bucket?: string;
+  objectKey?: string;
 }
 
 export interface EvidenceManifest {
@@ -136,6 +140,7 @@ export interface EvidenceStorePort {
   finalizeAndExport(runCtx: RunContext): Promise<{
     manifest: EvidenceManifest;
     zip?: EvidenceExportArtifact;
+    exports?: EvidenceExportArtifact[];
   }>;
 }
 
@@ -167,6 +172,8 @@ export interface WorkflowExecutionResult {
   summary: Record<string, unknown>;
   policyDecisions: PolicyDecision[];
   manifest: EvidenceManifest;
+  verifySummary?: VerifySummary;
+  remediationActions?: RemediationAction[];
 }
 
 export type WorkspaceCleanupPolicy =
@@ -220,7 +227,7 @@ export interface PRProviderPort {
     recipesApplied: string[];
     confidenceScore: number | null;
     blockedReason?: string;
-  }): Promise<{ prUrl: string }>;
+  }): Promise<{ prUrl: string; prNumber?: number | null }>;
 }
 
 export interface WorkflowRunner {
