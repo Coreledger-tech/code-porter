@@ -9,6 +9,7 @@
     "@code-porter/knowledge": "0.1.0",
     "@code-porter/recipes": "0.1.0",
     "@code-porter/verifier": "0.1.0",
+    "@code-porter/workspace": "0.1.0",
     "@code-porter/workflow-runner-dbos": "0.1.0",
     "@code-porter/workflow-runner-inmemory": "0.1.0",
     "express": "^4.21.2",

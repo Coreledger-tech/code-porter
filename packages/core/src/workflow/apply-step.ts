@@ -16,17 +16,12 @@ async function runGit(repoPath: string, args: string[]): Promise<string> {
   return stdout.trim();
 }
 
-function sanitizeForBranch(value: string): string {
-  return value.replace(/[^a-zA-Z0-9._-]/g, "-");
-}
-
 export interface ApplyStepResult {
   applyResult: RecipeApplyResult;
-  branchName: string;
   patch: string;
   changedFiles: number;
   changedLines: number;
-  commitSha?: string;
+  commitAfter?: string;
 }
 
 export async function runApplyStep(input: {
@@ -39,13 +34,8 @@ export async function runApplyStep(input: {
 }): Promise<ApplyStepResult> {
   const gitStatus = await runGit(input.repoPath, ["status", "--porcelain"]);
   if (gitStatus.length > 0) {
-    throw new Error("Apply blocked: target repository has uncommitted changes");
+    throw new Error("Apply blocked: workspace has uncommitted changes before apply");
   }
-
-  const branchName = `codeporter/${sanitizeForBranch(input.campaignId)}/${sanitizeForBranch(
-    input.runId
-  )}`;
-  await runGit(input.repoPath, ["checkout", "-b", branchName]);
 
   const applyResult = input.recipeEngine.apply(input.scan, input.files);
   const changedFilePaths = applyResult.changes
@@ -82,10 +72,9 @@ export async function runApplyStep(input: {
 
   return {
     applyResult,
-    branchName,
     patch,
     changedFiles,
     changedLines,
-    commitSha
+    commitAfter: commitSha
   };
 }

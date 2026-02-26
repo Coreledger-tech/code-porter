@@ -1,5 +1,7 @@
 node_modules/
 /evidence/
+/evidence-exports/
+/workspaces/
 .env
 npm-debug.log*
 .DS_Store

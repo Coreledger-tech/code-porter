@@ -1,9 +1,12 @@
 import type {
+  PolicyConfig,
   PolicyDecision,
   Project,
   Run,
   RunMode,
   RunStatus,
+  ScoreResult,
+  VerifyFailureKind,
   VerifySummary
 } from "../models.js";
 import { computeConfidenceScore } from "../scoring.js";
@@ -13,6 +16,8 @@ import {
   YamlPolicyEngine
 } from "../policy.js";
 import type {
+  DeterministicRemediator,
+  EvidenceStorePort,
   EvidenceWriterPort,
   KnowledgePublisherPort,
   RecipeEnginePort,
@@ -20,7 +25,6 @@ import type {
   WorkflowExecutionResult
 } from "../workflow-runner.js";
 import { runApplyStep } from "./apply-step.js";
-import { runEvidenceStep } from "./evidence-step.js";
 import { loadCandidateFiles, runPlanStep } from "./plan-step.js";
 import { runScanStep } from "./scan-step.js";
 
@@ -43,7 +47,10 @@ function summarizeStatus(
   };
 }
 
-function verifyForPlanMode(buildSystem: VerifySummary["buildSystem"], hasTests: boolean): VerifySummary {
+function verifyForPlanMode(
+  buildSystem: VerifySummary["buildSystem"],
+  hasTests: boolean
+): VerifySummary {
   return {
     buildSystem,
     hasTests,
@@ -58,7 +65,63 @@ function verifyForPlanMode(buildSystem: VerifySummary["buildSystem"], hasTests: 
     staticChecks: {
       status: "not_run",
       reason: "plan mode does not execute verifier commands"
-    }
+    },
+    remediationSuggestions: []
+  };
+}
+
+function gatherVerifyFailureKinds(summary: VerifySummary): VerifyFailureKind[] {
+  const kinds: VerifyFailureKind[] = [];
+
+  if (summary.compile.status !== "passed" && summary.compile.failureKind) {
+    kinds.push(summary.compile.failureKind);
+  }
+
+  if (summary.tests.status !== "passed" && summary.tests.failureKind) {
+    kinds.push(summary.tests.failureKind);
+  }
+
+  return [...new Set(kinds)];
+}
+
+function deriveBlockedReason(
+  summary: VerifySummary,
+  policy: PolicyConfig
+): string | undefined {
+  const failureKinds = gatherVerifyFailureKinds(summary);
+
+  if (failureKinds.length === 0) {
+    return undefined;
+  }
+
+  const isOnlyNonBlocking = failureKinds.every((kind) =>
+    policy.verify.nonBlockingFailureKinds.includes(kind)
+  );
+
+  if (!isOnlyNonBlocking) {
+    return undefined;
+  }
+
+  const checks: string[] = [];
+  if (summary.compile.status !== "passed") {
+    checks.push(`compile(${summary.compile.failureKind ?? "unknown"})`);
+  }
+  if (summary.tests.status !== "passed") {
+    checks.push(`tests(${summary.tests.failureKind ?? "unknown"})`);
+  }
+
+  return `Verification blocked by infrastructure: ${checks.join(", ")}`;
+}
+
+function buildBlockedScoreArtifact(blockedReason: string): {
+  score: null;
+  classification: "blocked";
+  reason: string;
+} {
+  return {
+    score: null,
+    classification: "blocked",
+    reason: blockedReason
   };
 }
 
@@ -69,10 +132,22 @@ export async function executeWorkflow(input: {
   mode: RunMode;
   policyPath: string;
   evidenceRoot: string;
+  workingRepoPath: string;
+  workspace: {
+    workspacePath: string;
+    resolvedBaseRef: string;
+    commitBefore: string;
+    defaultBranch: string;
+    cloneUrlUsed: string;
+    sourceRef: string;
+    branchName?: string;
+  };
   recipeEngine: RecipeEnginePort;
   verifier: VerifierPort;
   evidenceWriter: EvidenceWriterPort;
+  evidenceStore: EvidenceStorePort;
   knowledgePublisher?: KnowledgePublisherPort;
+  remediator?: DeterministicRemediator;
 }): Promise<WorkflowExecutionResult> {
   const runContext = {
     projectId: input.project.id,
@@ -87,13 +162,15 @@ export async function executeWorkflow(input: {
   await input.evidenceWriter.write(runContext, "run.json", {
     ...input.run,
     startedAt: input.run.startedAt,
-    mode: input.mode
+    mode: input.mode,
+    workingRepoPath: input.workingRepoPath,
+    workspace: input.workspace
   });
 
-  const scanResult = await runScanStep(input.project.localPath);
+  const scanResult = await runScanStep(input.workingRepoPath);
   await input.evidenceWriter.write(runContext, "scan.json", scanResult);
 
-  const files = await loadCandidateFiles(input.project.localPath);
+  const files = await loadCandidateFiles(input.workingRepoPath);
   const { planResult, planMetrics } = runPlanStep({
     scan: scanResult,
     files,
@@ -105,15 +182,16 @@ export async function executeWorkflow(input: {
 
   let changedFiles = planMetrics.filesChanged;
   let changedLines = planMetrics.linesChanged;
-  let branchName: string | undefined;
+  let branchName: string | undefined = input.workspace.branchName;
   let applySummary: Record<string, unknown> | undefined;
   let verifySummary: VerifySummary;
+  let commitAfter: string | undefined;
 
   const planBlocking = hasBlockingDecision(policyDecisions);
 
   if (input.mode === "apply" && !planBlocking) {
     const applyStepResult = await runApplyStep({
-      repoPath: input.project.localPath,
+      repoPath: input.workingRepoPath,
       campaignId: input.campaign.id,
       runId: input.run.id,
       scan: scanResult,
@@ -123,11 +201,12 @@ export async function executeWorkflow(input: {
 
     changedFiles = applyStepResult.changedFiles;
     changedLines = applyStepResult.changedLines;
-    branchName = applyStepResult.branchName;
+    commitAfter = applyStepResult.commitAfter;
 
     applySummary = {
-      branchName: applyStepResult.branchName,
-      commitSha: applyStepResult.commitSha,
+      branchName,
+      commitBefore: input.workspace.commitBefore,
+      commitAfter: applyStepResult.commitAfter,
       changedFiles: applyStepResult.changedFiles,
       changedLines: applyStepResult.changedLines,
       advisories: applyStepResult.applyResult.advisories,
@@ -140,14 +219,44 @@ export async function executeWorkflow(input: {
     });
 
     if (applyStepResult.patch.length > 0) {
-      await input.evidenceWriter.write(runContext, "artifacts/diff.patch", applyStepResult.patch);
+      await input.evidenceWriter.write(
+        runContext,
+        "artifacts/diff.patch",
+        applyStepResult.patch
+      );
     }
 
-    verifySummary = await input.verifier.run(
-      scanResult,
-      input.project.localPath,
-      policy
-    );
+    verifySummary = await input.verifier.run(scanResult, input.workingRepoPath, policy);
+
+    if (input.remediator) {
+      const remediation = input.remediator.appliesTo({
+        scan: scanResult,
+        verify: verifySummary,
+        policy
+      })
+        ? await input.remediator.run({
+            scan: scanResult,
+            verify: verifySummary,
+            repoPath: input.workingRepoPath,
+            policy,
+            verifier: input.verifier
+          })
+        : {
+            applied: false,
+            actions: [
+              {
+                action: "deterministic_remediation",
+                status: "skipped",
+                reason: "Remediator not applicable"
+              }
+            ],
+            verifySummary,
+            reason: "not_applicable"
+          };
+
+      verifySummary = remediation.verifySummary;
+      await input.evidenceWriter.write(runContext, "agentic-remediation.json", remediation);
+    }
   } else {
     if (input.mode === "apply" && planBlocking) {
       applySummary = {
@@ -168,30 +277,56 @@ export async function executeWorkflow(input: {
 
   await input.evidenceWriter.write(runContext, "policy-decisions.json", policyDecisions);
 
-  const violations = countPolicyViolations(policyDecisions);
-  const scoreResult = computeConfidenceScore({
-    verify: verifySummary,
-    filesChanged: changedFiles,
-    linesChanged: changedLines,
-    policyViolations: violations,
-    policy
-  });
-  await input.evidenceWriter.write(runContext, "score.json", scoreResult);
-
   const blocking = hasBlockingDecision(policyDecisions);
+  const blockedReason = deriveBlockedReason(verifySummary, policy);
+  const isBlocked = input.mode === "apply" && !blocking && Boolean(blockedReason);
 
-  const status: RunStatus =
-    blocking || scoreResult.classification === "needs_review"
+  let confidenceScore: ScoreResult | null = null;
+  if (!isBlocked) {
+    const violations = countPolicyViolations(policyDecisions);
+    confidenceScore = computeConfidenceScore({
+      verify: verifySummary,
+      filesChanged: changedFiles,
+      linesChanged: changedLines,
+      policyViolations: violations,
+      policy
+    });
+
+    await input.evidenceWriter.write(runContext, "score.json", confidenceScore);
+  } else {
+    await input.evidenceWriter.write(
+      runContext,
+      "score.json",
+      buildBlockedScoreArtifact(blockedReason!)
+    );
+  }
+
+  const status: RunStatus = isBlocked
+    ? "blocked"
+    : blocking || confidenceScore?.classification === "needs_review"
       ? "needs_review"
       : "completed";
+
+  const workspaceSummary = {
+    workspacePath: input.workspace.workspacePath,
+    resolvedBaseRef: input.workspace.resolvedBaseRef,
+    defaultBranch: input.workspace.defaultBranch,
+    cloneUrlUsed: input.workspace.cloneUrlUsed,
+    sourceRef: input.workspace.sourceRef,
+    commitBefore: input.workspace.commitBefore,
+    commitAfter,
+    branchName
+  };
 
   const summary = summarizeStatus(status, input.mode, input.project, {
     branchName,
     changedFiles,
     changedLines,
-    policyViolations: violations,
-    score: scoreResult.score,
-    classification: scoreResult.classification,
+    policyViolations: countPolicyViolations(policyDecisions),
+    score: confidenceScore?.score ?? null,
+    classification: confidenceScore?.classification ?? "blocked",
+    blockedReason,
+    workspace: workspaceSummary,
     applySummary
   });
 
@@ -206,16 +341,25 @@ export async function executeWorkflow(input: {
     : { published: false, reason: "knowledge publisher not configured" };
 
   await input.evidenceWriter.write(runContext, "knowledge.json", knowledgeResult);
+  await input.evidenceWriter.write(runContext, "run.json", {
+    ...input.run,
+    mode: input.mode,
+    status,
+    summary,
+    workingRepoPath: input.workingRepoPath,
+    workspace: workspaceSummary
+  });
 
-  const manifest = await runEvidenceStep(input.evidenceWriter, runContext);
+  const evidenceResult = await input.evidenceStore.finalizeAndExport(runContext);
 
   return {
     status,
-    confidenceScore: scoreResult,
+    confidenceScore,
     evidencePath: input.evidenceRoot,
     branchName,
+    evidenceZip: evidenceResult.zip,
     summary,
     policyDecisions,
-    manifest
+    manifest: evidenceResult.manifest
   };
 }

@@ -1,7 +1,16 @@
 create table if not exists projects (
   id text primary key,
   name text not null,
-  local_path text not null,
+  type text not null default 'local' check (type in ('local', 'github')),
+  local_path text,
+  owner text,
+  repo text,
+  clone_url text,
+  default_branch text,
+  constraint projects_type_requirements_check check (
+    (type = 'local' and local_path is not null and owner is null and repo is null)
+    or (type = 'github' and owner is not null and repo is not null)
+  ),
   created_at timestamptz not null default now()
 );
 
@@ -25,10 +34,11 @@ create table if not exists runs (
   id text primary key,
   campaign_id text not null references campaigns(id) on delete cascade,
   mode text not null check (mode in ('plan', 'apply')),
-  status text not null check (status in ('queued', 'running', 'completed', 'failed', 'needs_review')),
+  status text not null check (status in ('queued', 'running', 'completed', 'failed', 'needs_review', 'blocked')),
   confidence_score int,
   evidence_path text,
   branch_name text,
+  pr_url text,
   summary jsonb not null default '{}'::jsonb,
   started_at timestamptz not null,
   finished_at timestamptz

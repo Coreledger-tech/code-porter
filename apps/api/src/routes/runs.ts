@@ -1,3 +1,5 @@
+import { createReadStream } from "node:fs";
+import { access } from "node:fs/promises";
 import { Router } from "express";
 import { query } from "../db/client.js";
 
@@ -8,6 +10,7 @@ interface RunRow {
   confidence_score: number | null;
   evidence_path: string | null;
   branch_name: string | null;
+  pr_url: string | null;
   summary: Record<string, unknown>;
 }
 
@@ -23,7 +26,7 @@ export function runsRouter(): Router {
     const runId = req.params.id;
 
     const runQuery = await query<RunRow>(
-      `select id, campaign_id, status, confidence_score, evidence_path, branch_name, summary
+      `select id, campaign_id, status, confidence_score, evidence_path, branch_name, pr_url, summary
        from runs where id = $1`,
       [runId]
     );
@@ -48,9 +51,46 @@ export function runsRouter(): Router {
       confidenceScore: run.confidence_score,
       evidencePath: run.evidence_path,
       branchName: run.branch_name,
+      prUrl: run.pr_url,
+      evidenceZipUrl: `/runs/${run.id}/evidence.zip`,
       summary: run.summary,
       evidenceArtifacts: artifacts.rows
     });
+  });
+
+  router.get("/runs/:id/evidence.zip", async (req, res) => {
+    const runId = req.params.id;
+    const artifactQuery = await query<ArtifactRow>(
+      `select type, path
+       from evidence_artifacts
+       where run_id = $1 and type = 'evidence.zip'
+       order by created_at desc
+       limit 1`,
+      [runId]
+    );
+
+    const zip = artifactQuery.rows[0];
+    if (!zip) {
+      return res.status(404).json({ error: "evidence zip not found" });
+    }
+
+    try {
+      await access(zip.path);
+    } catch {
+      return res.status(404).json({ error: "evidence zip not found" });
+    }
+
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename=\"${runId}-evidence.zip\"`);
+    const stream = createReadStream(zip.path);
+    stream.on("error", () => {
+      if (!res.headersSent) {
+        res.status(500).json({ error: "failed to read evidence zip" });
+      } else {
+        res.end();
+      }
+    });
+    stream.pipe(res);
   });
 
   return router;

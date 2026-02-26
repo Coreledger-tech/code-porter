@@ -6,6 +6,18 @@ allowedBuildSystems:
   - gradle
   - node
 verifyFailureMode: warn
+verify:
+  blockingFailureKinds:
+    - code_failure
+  nonBlockingFailureKinds:
+    - tool_missing
+    - artifact_resolution
+    - repo_unreachable
+  retryOnCachedResolution: true
+  maven:
+    forceUpdate: true
+    prefetchPlugins: true
+    purgeLocalCache: false
 confidenceThresholds:
   pass: 70
   needsReview: 55

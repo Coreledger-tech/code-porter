@@ -1,15 +1,34 @@
 export type BuildSystem = "maven" | "gradle" | "node" | "unknown";
+export type ProjectType = "local" | "github";
 
 export type RunMode = "plan" | "apply";
 
-export type RunStatus = "queued" | "running" | "completed" | "failed" | "needs_review";
+export type RunStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "needs_review"
+  | "blocked";
 
 export type CheckStatus = "passed" | "failed" | "not_run";
+export type RunFailureKind = "auth" | "repo_write" | "workspace_prepare" | "workspace_cleanup";
+export type VerifyFailureKind =
+  | "code_failure"
+  | "tool_missing"
+  | "artifact_resolution"
+  | "repo_unreachable"
+  | "unknown";
 
 export interface Project {
   id: string;
   name: string;
-  localPath: string;
+  type: ProjectType;
+  localPath?: string;
+  owner?: string;
+  repo?: string;
+  cloneUrl?: string;
+  defaultBranch?: string;
   createdAt: string;
 }
 
@@ -49,6 +68,16 @@ export interface PolicyConfig {
   requireTestsIfPresent: boolean;
   allowedBuildSystems: BuildSystem[];
   verifyFailureMode: "deny" | "warn";
+  verify: {
+    blockingFailureKinds: VerifyFailureKind[];
+    nonBlockingFailureKinds: VerifyFailureKind[];
+    retryOnCachedResolution: boolean;
+    maven: {
+      forceUpdate: boolean;
+      prefetchPlugins: boolean;
+      purgeLocalCache: boolean;
+    };
+  };
   confidenceThresholds: {
     pass: number;
     needsReview: number;
@@ -83,12 +112,25 @@ export interface PlanMetrics {
   linesChanged: number;
 }
 
+export interface VerifyAttempt {
+  command: string;
+  args: string[];
+  status: CheckStatus;
+  exitCode?: number;
+  output?: string;
+  failureKind?: VerifyFailureKind;
+  retryReason?: string;
+}
+
 export interface CheckResult {
   status: CheckStatus;
   command?: string;
   exitCode?: number;
   reason?: string;
   output?: string;
+  failureKind?: VerifyFailureKind;
+  attempts?: VerifyAttempt[];
+  blockedReason?: string;
 }
 
 export interface VerifySummary {
@@ -97,6 +139,7 @@ export interface VerifySummary {
   compile: CheckResult;
   tests: CheckResult;
   staticChecks: CheckResult;
+  remediationSuggestions?: string[];
 }
 
 export type PolicyDecisionStatus = "allow" | "deny" | "warn";
@@ -111,7 +154,7 @@ export interface PolicyDecision {
 
 export interface ScoreResult {
   score: number;
-  classification: "pass" | "needs_review";
+  classification: "pass" | "needs_review" | "blocked";
   breakdown: {
     compilePoints: number;
     testPoints: number;
