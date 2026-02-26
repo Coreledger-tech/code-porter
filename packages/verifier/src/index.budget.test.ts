@@ -20,7 +20,7 @@ vi.mock("./commands.js", async () => {
 import type { PolicyConfig } from "@code-porter/core/src/models.js";
 import { DefaultVerifier } from "./index.js";
 
-const policy: PolicyConfig = {
+const basePolicy: PolicyConfig = {
   maxChangeLines: 300,
   maxFilesChanged: 10,
   requireTestsIfPresent: true,
@@ -53,96 +53,17 @@ const policy: PolicyConfig = {
   }
 };
 
-describe("DefaultVerifier Maven retries", () => {
-  it("prefetches and retries with -U on cached artifact resolution", async () => {
+describe("DefaultVerifier budgets", () => {
+  it("classifies timed out verify command as budget_exceeded", async () => {
     runCommandMock.mockReset();
-    runCommandMock
-      .mockResolvedValueOnce({
-        status: "passed",
-        command: "mvn -q -U dependency:resolve-plugins"
-      })
-      .mockResolvedValueOnce({
-        status: "failed",
-        command: "mvn -q -DskipTests compile",
-        output: "resolution is not reattempted until the update interval"
-      })
-      .mockResolvedValueOnce({
-        status: "passed",
-        command: "mvn -U -q -DskipTests compile"
-      })
-      .mockResolvedValueOnce({
-        status: "passed",
-        command: "mvn -q test"
-      });
+    runCommandMock.mockResolvedValueOnce({
+      status: "failed",
+      command: "mvn -q -DskipTests compile",
+      reason: "command timed out",
+      timedOut: true
+    });
 
-    const repo = await mkdtemp(join(tmpdir(), "code-porter-verifier-retry-"));
-    await writeFile(join(repo, "pom.xml"), "<project></project>", "utf8");
-
-    const verifier = new DefaultVerifier();
-    const result = await verifier.run(
-      {
-        buildSystem: "maven",
-        hasTests: true,
-        metadata: {
-          gitBranch: "main",
-          toolAvailability: {
-            mvn: true,
-            gradle: false,
-            npm: false,
-            node: true
-          },
-          detectedFiles: ["pom.xml"]
-        }
-      },
-      repo,
-      policy
-    );
-
-    expect(result.compile.status).toBe("passed");
-    expect(result.compile.attempts?.length).toBe(3);
-    expect(result.compile.attempts?.[0]?.retryReason).toBe("prefetch_plugins");
-    expect(result.compile.attempts?.[2]?.retryReason).toBe(
-      "retry_force_update_cached_resolution"
-    );
-    expect(runCommandMock).toHaveBeenCalledWith(
-      {
-        command: "mvn",
-        args: ["-U", "-q", "-DskipTests", "compile"]
-      },
-      repo,
-      {
-        timeoutMs: expect.any(Number)
-      }
-    );
-  });
-
-  it("purges local cache and retries again when cached resolution persists", async () => {
-    runCommandMock.mockReset();
-    runCommandMock
-      .mockResolvedValueOnce({
-        status: "passed",
-        command: "mvn -q -U dependency:resolve-plugins"
-      })
-      .mockResolvedValueOnce({
-        status: "failed",
-        command: "mvn -q -DskipTests compile",
-        output: "was not found in central during a previous attempt"
-      })
-      .mockResolvedValueOnce({
-        status: "failed",
-        command: "mvn -U -q -DskipTests compile",
-        output: "resolution is not reattempted until the update interval"
-      })
-      .mockResolvedValueOnce({
-        status: "passed",
-        command: "mvn -q dependency:purge-local-repository"
-      })
-      .mockResolvedValueOnce({
-        status: "passed",
-        command: "mvn -U -q -DskipTests compile"
-      });
-
-    const repo = await mkdtemp(join(tmpdir(), "code-porter-verifier-purge-"));
+    const repo = await mkdtemp(join(tmpdir(), "code-porter-verifier-budget-timeout-"));
     await writeFile(join(repo, "pom.xml"), "<project></project>", "utf8");
 
     const verifier = new DefaultVerifier();
@@ -162,19 +83,71 @@ describe("DefaultVerifier Maven retries", () => {
         }
       },
       repo,
-      policy
+      {
+        ...basePolicy,
+        maxVerifyMinutesPerRun: 1,
+        verify: {
+          ...basePolicy.verify,
+          maven: {
+            ...basePolicy.verify.maven,
+            prefetchPlugins: false
+          }
+        }
+      }
     );
 
-    expect(result.compile.status).toBe("passed");
-    expect(
-      result.compile.attempts?.some(
-        (attempt) => attempt.retryReason === "purge_local_cache_before_retry"
-      )
-    ).toBe(true);
-    expect(
-      result.compile.attempts?.some(
-        (attempt) => attempt.retryReason === "retry_after_purge_local_cache"
-      )
-    ).toBe(true);
+    expect(result.compile.failureKind).toBe("budget_exceeded");
+    expect(result.compile.budgetKey).toBe("maxVerifyMinutesPerRun");
+    expect(result.compile.blockedReason).toContain("maxVerifyMinutesPerRun");
+  });
+
+  it("stops retry loop when maxVerifyRetries budget is reached", async () => {
+    runCommandMock.mockReset();
+    runCommandMock
+      .mockResolvedValueOnce({
+        status: "passed",
+        command: "mvn -q -U dependency:resolve-plugins"
+      })
+      .mockResolvedValueOnce({
+        status: "failed",
+        command: "mvn -q -DskipTests compile",
+        output: "resolution is not reattempted until the update interval"
+      })
+      .mockResolvedValueOnce({
+        status: "failed",
+        command: "mvn -U -q -DskipTests compile",
+        output: "resolution is not reattempted until the update interval"
+      });
+
+    const repo = await mkdtemp(join(tmpdir(), "code-porter-verifier-budget-retry-"));
+    await writeFile(join(repo, "pom.xml"), "<project></project>", "utf8");
+
+    const verifier = new DefaultVerifier();
+    const result = await verifier.run(
+      {
+        buildSystem: "maven",
+        hasTests: false,
+        metadata: {
+          gitBranch: "main",
+          toolAvailability: {
+            mvn: true,
+            gradle: false,
+            npm: false,
+            node: true
+          },
+          detectedFiles: ["pom.xml"]
+        }
+      },
+      repo,
+      {
+        ...basePolicy,
+        maxVerifyRetries: 1
+      }
+    );
+
+    expect(result.compile.failureKind).toBe("budget_exceeded");
+    expect(result.compile.budgetKey).toBe("maxVerifyRetries");
+    expect(result.compile.budgetLimit).toBe(1);
+    expect(result.compile.attempts?.length).toBe(3);
   });
 });

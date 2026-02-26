@@ -1,10 +1,14 @@
+import { resolve } from "node:path";
+import { YamlPolicyEngine } from "@code-porter/core/src/policy.js";
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
 import { query } from "../db/client.js";
 import { parseSummaryWindow } from "./summary-utils.js";
 import {
   CampaignPausedError,
+  defaultRecipePackId,
   enqueueCampaignRun,
+  listSupportedRecipePacks,
   pauseCampaign,
   resumeCampaign,
   RunThrottleError
@@ -12,6 +16,11 @@ import {
 
 interface IdRow {
   id: string;
+}
+
+interface PolicyRow {
+  id: string;
+  config_path: string;
 }
 
 interface CampaignSummaryRow {
@@ -69,9 +78,9 @@ export function campaignsRouter(): Router {
       targetSelector?: string;
     };
 
-    if (!body.projectId || !body.policyId || !body.recipePack) {
+    if (!body.projectId || !body.policyId) {
       return res.status(400).json({
-        error: "projectId, policyId, and recipePack are required"
+        error: "projectId and policyId are required"
       });
     }
 
@@ -83,26 +92,44 @@ export function campaignsRouter(): Router {
       return res.status(404).json({ error: "project not found" });
     }
 
-    const policyCheck = await query<IdRow>(
-      `select id from policies where id = $1`,
+    const policyCheck = await query<PolicyRow>(
+      `select id, config_path from policies where id = $1`,
       [body.policyId]
     );
-    if (policyCheck.rows.length === 0) {
+    const policyRow = policyCheck.rows[0];
+    if (!policyRow) {
       return res.status(404).json({ error: "policy not found" });
+    }
+
+    let resolvedRecipePack = body.recipePack?.trim();
+    if (!resolvedRecipePack) {
+      const policyPath = resolve(process.cwd(), policyRow.config_path);
+      const policy = await new YamlPolicyEngine().load(policyPath);
+      resolvedRecipePack = policy.defaultRecipePack || defaultRecipePackId();
+    }
+
+    const allowedRecipePacks = listSupportedRecipePacks();
+    if (!allowedRecipePacks.includes(resolvedRecipePack)) {
+      return res.status(400).json({
+        error: "unsupported recipePack",
+        recipePack: resolvedRecipePack,
+        allowedRecipePacks,
+        defaultRecipePack: defaultRecipePackId()
+      });
     }
 
     const id = randomUUID();
     await query(
       `insert into campaigns (id, project_id, policy_id, recipe_pack, target_selector)
        values ($1, $2, $3, $4, $5)`,
-      [id, body.projectId, body.policyId, body.recipePack, body.targetSelector ?? null]
+      [id, body.projectId, body.policyId, resolvedRecipePack, body.targetSelector ?? null]
     );
 
     return res.status(201).json({
       id,
       projectId: body.projectId,
       policyId: body.policyId,
-      recipePack: body.recipePack,
+      recipePack: resolvedRecipePack,
       targetSelector: body.targetSelector,
       createdAt: new Date().toISOString()
     });

@@ -17,6 +17,7 @@
     "db:migrate": "node --env-file-if-exists=.env --import=tsx apps/api/src/db/migrate.ts",
     "cleanup:workspaces": "node --env-file-if-exists=.env --import=tsx apps/api/src/ops/cleanup-workspaces.ts",
     "cleanup:evidence": "node --env-file-if-exists=.env --import=tsx apps/api/src/ops/cleanup-evidence.ts",
+    "release:rc": "node --env-file-if-exists=.env --import=tsx scripts/release-rc.ts",
     "test": "vitest run",
     "test:integration": "npm run db:up && docker compose up -d minio && docker compose up minio-init && node --env-file-if-exists=.env ./node_modules/vitest/vitest.mjs run --config vitest.integration.config.ts",
     "test:watch": "vitest",

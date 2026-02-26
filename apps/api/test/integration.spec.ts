@@ -629,7 +629,7 @@ describe("API integration", () => {
 
     expect(run.status).toBe("blocked");
     expect(run.confidenceScore).toBeNull();
-    expect(run.summary.blockedReason).toContain("Verification blocked");
+    expect(run.summary.blockedReason).toContain("Artifact resolution failed");
   });
 
   it("marks code failures as needs_review", async () => {

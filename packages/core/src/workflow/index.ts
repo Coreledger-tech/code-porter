@@ -103,6 +103,15 @@ function deriveBlockedReason(
     return undefined;
   }
 
+  const explicitReasons = [
+    summary.compile.blockedReason,
+    summary.tests.blockedReason,
+    summary.staticChecks.blockedReason
+  ].filter((value): value is string => typeof value === "string" && value.length > 0);
+  if (explicitReasons.length > 0) {
+    return explicitReasons.join("; ");
+  }
+
   const checks: string[] = [];
   if (summary.compile.status !== "passed") {
     checks.push(`compile(${summary.compile.failureKind ?? "unknown"})`);
@@ -112,6 +121,31 @@ function deriveBlockedReason(
   }
 
   return `Verification blocked by infrastructure: ${checks.join(", ")}`;
+}
+
+function collectBudgetSignals(summary: VerifySummary): Array<{
+  check: "compile" | "tests" | "staticChecks";
+  budgetKey?: string;
+  limit?: number;
+  observed?: number;
+}> {
+  const checks: Array<{
+    name: "compile" | "tests" | "staticChecks";
+    value: VerifySummary["compile"];
+  }> = [
+    { name: "compile", value: summary.compile },
+    { name: "tests", value: summary.tests },
+    { name: "staticChecks", value: summary.staticChecks }
+  ];
+
+  return checks
+    .filter((entry) => entry.value.failureKind === "budget_exceeded")
+    .map((entry) => ({
+      check: entry.name,
+      budgetKey: entry.value.budgetKey,
+      limit: entry.value.budgetLimit,
+      observed: entry.value.budgetObserved
+    }));
 }
 
 function buildBlockedScoreArtifact(blockedReason: string): {
@@ -325,6 +359,21 @@ export async function executeWorkflow(input: {
       remediationActions = remediation.actions;
       await input.evidenceWriter.write(runContext, "agentic-remediation.json", remediation);
     }
+    const budgetSignals = collectBudgetSignals(verifySummary);
+    for (const signal of budgetSignals) {
+      await emit({
+        eventType: "warning",
+        step: "verify",
+        message: "Budget guardrail triggered during verification",
+        payload: {
+          check: signal.check,
+          budgetKey: signal.budgetKey ?? "unknown",
+          limit: signal.limit ?? null,
+          observed: signal.observed ?? null,
+          actionTaken: "blocked"
+        }
+      });
+    }
     await emit({
       eventType: "step_end",
       step: "verify",
@@ -363,6 +412,11 @@ export async function executeWorkflow(input: {
   const blocking = hasBlockingDecision(policyDecisions);
   const blockedReason = deriveBlockedReason(verifySummary, policy);
   const isBlocked = input.mode === "apply" && !blocking && Boolean(blockedReason);
+  const budgetBlocked =
+    isBlocked &&
+    [verifySummary.compile, verifySummary.tests, verifySummary.staticChecks].some(
+      (check) => check.failureKind === "budget_exceeded"
+    );
 
   let confidenceScore: ScoreResult | null = null;
   if (!isBlocked) {
@@ -408,6 +462,7 @@ export async function executeWorkflow(input: {
     policyViolations: countPolicyViolations(policyDecisions),
     score: confidenceScore?.score ?? null,
     classification: confidenceScore?.classification ?? "blocked",
+    ...(budgetBlocked ? { failureKind: "budget_guardrail" } : {}),
     blockedReason,
     workspace: workspaceSummary,
     applySummary
@@ -438,7 +493,9 @@ export async function executeWorkflow(input: {
     step: "evidence_finalize",
     message: "Finalizing evidence artifacts"
   });
-  const evidenceResult = await input.evidenceStore.finalizeAndExport(runContext);
+  const evidenceResult = await input.evidenceStore.finalizeAndExport(runContext, {
+    maxEvidenceZipBytes: policy.maxEvidenceZipBytes
+  });
   const mergedExports = [
     ...(evidenceResult.manifest.exports ?? []),
     ...(evidenceResult.exports ?? [])

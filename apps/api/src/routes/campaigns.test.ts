@@ -1,14 +1,16 @@
 import type { Router } from "express";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const {
-  queryMock,
-  enqueueCampaignRunMock,
-  pauseCampaignMock,
-  resumeCampaignMock,
-  RunThrottleError,
-  CampaignPausedError
-} = vi.hoisted(() => {
+  const {
+    queryMock,
+    enqueueCampaignRunMock,
+    pauseCampaignMock,
+    resumeCampaignMock,
+    listSupportedRecipePacksMock,
+    defaultRecipePackIdMock,
+    RunThrottleError,
+    CampaignPausedError
+  } = vi.hoisted(() => {
   class RunThrottleError extends Error {
     limitType: "project" | "global";
     currentInflight: number;
@@ -41,14 +43,19 @@ const {
   }
 
   return {
-    queryMock: vi.fn(),
-    enqueueCampaignRunMock: vi.fn(),
-    pauseCampaignMock: vi.fn(),
-    resumeCampaignMock: vi.fn(),
-    RunThrottleError,
-    CampaignPausedError
-  };
-});
+      queryMock: vi.fn(),
+      enqueueCampaignRunMock: vi.fn(),
+      pauseCampaignMock: vi.fn(),
+      resumeCampaignMock: vi.fn(),
+      listSupportedRecipePacksMock: vi.fn(() => [
+        "java-maven-core",
+        "java-maven-plugin-modernize"
+      ]),
+      defaultRecipePackIdMock: vi.fn(() => "java-maven-plugin-modernize"),
+      RunThrottleError,
+      CampaignPausedError
+    };
+  });
 
 vi.mock("../db/client.js", () => {
   return { query: queryMock };
@@ -59,6 +66,8 @@ vi.mock("../workflow-service.js", () => {
     enqueueCampaignRun: enqueueCampaignRunMock,
     pauseCampaign: pauseCampaignMock,
     resumeCampaign: resumeCampaignMock,
+    listSupportedRecipePacks: listSupportedRecipePacksMock,
+    defaultRecipePackId: defaultRecipePackIdMock,
     RunThrottleError,
     CampaignPausedError
   };
@@ -105,6 +114,8 @@ describe("campaignsRouter", () => {
     enqueueCampaignRunMock.mockReset();
     pauseCampaignMock.mockReset();
     resumeCampaignMock.mockReset();
+    listSupportedRecipePacksMock.mockClear();
+    defaultRecipePackIdMock.mockClear();
   });
 
   it("rejects campaign creation when project is missing", async () => {
@@ -131,7 +142,7 @@ describe("campaignsRouter", () => {
   it("creates campaign when project and policy exist", async () => {
     queryMock
       .mockResolvedValueOnce({ rows: [{ id: "project-1" }] })
-      .mockResolvedValueOnce({ rows: [{ id: "default" }] })
+      .mockResolvedValueOnce({ rows: [{ id: "default", config_path: "policies/default.yaml" }] })
       .mockResolvedValueOnce({ rows: [] });
 
     const handler = findRouteHandler(campaignsRouter(), "post", "/campaigns");
@@ -152,7 +163,59 @@ describe("campaignsRouter", () => {
     expect(res.statusCode).toBe(201);
     expect((res.body as any).projectId).toBe("project-1");
     expect((res.body as any).policyId).toBe("default");
+    expect((res.body as any).recipePack).toBe("java-maven-core");
     expect(queryMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("defaults recipePack when not provided", async () => {
+    queryMock
+      .mockResolvedValueOnce({ rows: [{ id: "project-1" }] })
+      .mockResolvedValueOnce({ rows: [{ id: "default", config_path: "policies/default.yaml" }] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const handler = findRouteHandler(campaignsRouter(), "post", "/campaigns");
+    const res = createMockRes();
+
+    await handler(
+      {
+        body: {
+          projectId: "project-1",
+          policyId: "default"
+        }
+      },
+      res
+    );
+
+    expect(res.statusCode).toBe(201);
+    expect((res.body as any).recipePack).toBe("java-maven-plugin-modernize");
+  });
+
+  it("rejects unsupported recipe packs with allowed list", async () => {
+    queryMock
+      .mockResolvedValueOnce({ rows: [{ id: "project-1" }] })
+      .mockResolvedValueOnce({ rows: [{ id: "default", config_path: "policies/default.yaml" }] });
+
+    const handler = findRouteHandler(campaignsRouter(), "post", "/campaigns");
+    const res = createMockRes();
+
+    await handler(
+      {
+        body: {
+          projectId: "project-1",
+          policyId: "default",
+          recipePack: "unknown-pack"
+        }
+      },
+      res
+    );
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toEqual({
+      error: "unsupported recipePack",
+      recipePack: "unknown-pack",
+      allowedRecipePacks: ["java-maven-core", "java-maven-plugin-modernize"],
+      defaultRecipePack: "java-maven-plugin-modernize"
+    });
   });
 
   it("starts plan and apply runs", async () => {

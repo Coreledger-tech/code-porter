@@ -8,11 +8,20 @@ const basePolicy: PolicyConfig = {
   requireTestsIfPresent: true,
   maxInflightRunsPerProject: 2,
   maxInflightRunsGlobal: 10,
+  maxVerifyMinutesPerRun: 20,
+  maxVerifyRetries: 2,
+  maxEvidenceZipBytes: 52428800,
+  defaultRecipePack: "java-maven-plugin-modernize",
   allowedBuildSystems: ["maven"],
   verifyFailureMode: "warn",
   verify: {
     blockingFailureKinds: ["code_failure"],
-    nonBlockingFailureKinds: ["tool_missing", "artifact_resolution", "repo_unreachable"],
+    nonBlockingFailureKinds: [
+      "tool_missing",
+      "artifact_resolution",
+      "repo_unreachable",
+      "budget_exceeded"
+    ],
     retryOnCachedResolution: false,
     maven: {
       forceUpdate: false,

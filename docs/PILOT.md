@@ -62,6 +62,24 @@ Track all metrics over rolling windows (`7d`, `30d`) with primary gate on `30d`.
 - severe infra degradation
 3. Prefer pause for broad control, cancel for targeted interruption.
 
+## 5-Repo Pilot Plan Template
+Use this table as the minimum planning artifact before starting any pilot wave.
+
+| repo | owner | bucket | base branch | freeze window | campaign id | policy | recipe pack | status | notes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `repo-1` | `team-a` | `small` | `main` | `Fri 18:00-23:00 UTC` | `TBD` | `default` | `java-maven-plugin-modernize` | `planned` | `stable build` |
+| `repo-2` | `team-b` | `small` | `main` | `Fri 18:00-23:00 UTC` | `TBD` | `default` | `java-maven-plugin-modernize` | `planned` | `single-module` |
+| `repo-3` | `team-c` | `medium` | `main` | `Sat 16:00-22:00 UTC` | `TBD` | `default` | `java-maven-plugin-modernize` | `planned` | `multi-module` |
+| `repo-4` | `team-d` | `medium` | `main` | `Sat 16:00-22:00 UTC` | `TBD` | `default` | `java-maven-plugin-modernize` | `planned` | `historical flaky tests` |
+| `repo-5` | `team-e` | `messy` | `main` | `Sun 14:00-20:00 UTC` | `TBD` | `default` | `java-maven-plugin-modernize` | `planned` | `legacy plugins` |
+
+### Freeze-Window and Owner Sign-Off Checklist
+1. Owner acknowledged campaign scope and rollback path.
+2. Freeze window agreed in writing for apply runs.
+3. Campaign paused outside allowed window.
+4. Cancel criteria documented for this repo (policy misconfig, auth incident, infra degradation).
+5. Post-run evidence review owner assigned.
+
 ## v1.0.0 Exit Criteria
 Pilot exits to v1.0.0 when all targets are met over the last 30 days:
 

@@ -3,6 +3,10 @@ maxFilesChanged: 10
 requireTestsIfPresent: true
 maxInflightRunsPerProject: 2
 maxInflightRunsGlobal: 10
+maxVerifyMinutesPerRun: 20
+maxVerifyRetries: 2
+maxEvidenceZipBytes: 52428800
+defaultRecipePack: java-maven-plugin-modernize
 allowedBuildSystems:
   - maven
   - gradle
@@ -15,6 +19,7 @@ verify:
     - tool_missing
     - artifact_resolution
     - repo_unreachable
+    - budget_exceeded
   retryOnCachedResolution: true
   maven:
     forceUpdate: true

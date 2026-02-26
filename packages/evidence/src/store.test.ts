@@ -3,7 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { RunContext } from "@code-porter/core/src/workflow-runner.js";
-import { LocalEvidenceStore, ZipEvidenceStore } from "./store.js";
+import {
+  EvidenceBudgetExceededError,
+  LocalEvidenceStore,
+  ZipEvidenceStore
+} from "./store.js";
 import { FileEvidenceWriter } from "./writer.js";
 
 describe("ZipEvidenceStore", () => {
@@ -38,5 +42,29 @@ describe("ZipEvidenceStore", () => {
     };
 
     expect(manifest.exports?.some((entry) => entry.type === "evidence.zip")).toBe(true);
+  });
+
+  it("blocks oversized evidence exports before upload", async () => {
+    const evidenceRoot = await mkdtemp(join(tmpdir(), "code-porter-evidence-root-"));
+    const exportRoot = await mkdtemp(join(tmpdir(), "code-porter-evidence-exports-"));
+    const writer = new FileEvidenceWriter(evidenceRoot);
+    const store = new ZipEvidenceStore(new LocalEvidenceStore(writer), exportRoot);
+
+    const runCtx: RunContext = {
+      projectId: "project-2",
+      campaignId: "campaign-2",
+      runId: "run-2",
+      evidenceRoot
+    };
+
+    await writer.write(runCtx, "run.json", {
+      payload: "x".repeat(2048)
+    });
+
+    await expect(
+      store.finalizeAndExport(runCtx, {
+        maxEvidenceZipBytes: 1
+      })
+    ).rejects.toBeInstanceOf(EvidenceBudgetExceededError);
   });
 });

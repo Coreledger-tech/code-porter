@@ -14,6 +14,7 @@ import type {
 } from "@code-porter/core/src/models.js";
 import type { EvidenceStorePort, PreparedWorkspace, WorkspaceCleanupPolicy } from "@code-porter/core/src/workflow-runner.js";
 import {
+  EvidenceBudgetExceededError,
   FileEvidenceWriter,
   LocalEvidenceStore,
   S3CompatibleEvidenceStore,
@@ -22,8 +23,11 @@ import {
 } from "@code-porter/evidence/src/index.js";
 import { StubKnowledgePublisher } from "@code-porter/knowledge/src/publisher.js";
 import { DefaultRecipeEngine } from "@code-porter/recipes/src/engine.js";
+import type { Recipe } from "@code-porter/recipes/src/types.js";
 import { MavenCompilerPluginBumpRecipe } from "@code-porter/recipes/src/recipes/maven-compiler-plugin-bump.js";
 import { MavenCompilerTarget17Recipe } from "@code-porter/recipes/src/recipes/maven-compiler-target17.js";
+import { MavenFailsafeSafeRecipe } from "@code-porter/recipes/src/recipes/maven-failsafe-safe.js";
+import { MavenJarPluginBumpRecipe } from "@code-porter/recipes/src/recipes/maven-jar-plugin-bump.js";
 import { MavenSurefireSafeRecipe } from "@code-porter/recipes/src/recipes/maven-surefire-safe.js";
 import {
   DefaultVerifier,
@@ -167,6 +171,50 @@ function parsePrNumberFromUrl(prUrl: string): number | null {
 
   const value = Number(match[1]);
   return Number.isInteger(value) ? value : null;
+}
+
+const DEFAULT_RECIPE_PACK = "java-maven-plugin-modernize";
+
+function buildJavaMavenCoreRecipes(): Recipe[] {
+  return [
+    new MavenCompilerTarget17Recipe(),
+    new MavenCompilerPluginBumpRecipe(),
+    new MavenSurefireSafeRecipe()
+  ];
+}
+
+function buildJavaMavenPluginModernizeRecipes(): Recipe[] {
+  return [
+    new MavenCompilerTarget17Recipe(),
+    new MavenCompilerPluginBumpRecipe(),
+    new MavenSurefireSafeRecipe(),
+    new MavenFailsafeSafeRecipe(),
+    new MavenJarPluginBumpRecipe()
+  ];
+}
+
+const RECIPE_PACK_FACTORIES: Record<string, () => Recipe[]> = {
+  "java-maven-core": buildJavaMavenCoreRecipes,
+  "java-maven-plugin-modernize": buildJavaMavenPluginModernizeRecipes
+};
+
+export function listSupportedRecipePacks(): string[] {
+  return Object.keys(RECIPE_PACK_FACTORIES);
+}
+
+export function defaultRecipePackId(): string {
+  return DEFAULT_RECIPE_PACK;
+}
+
+function createRecipeEngineForPack(recipePack: string): DefaultRecipeEngine {
+  const factory = RECIPE_PACK_FACTORIES[recipePack];
+  if (!factory) {
+    throw new RepoOperationError(
+      `Unsupported recipe pack '${recipePack}'. Supported packs: ${listSupportedRecipePacks().join(", ")}`,
+      "workspace_prepare"
+    );
+  }
+  return new DefaultRecipeEngine(factory());
 }
 
 function buildRunEvidencePath(projectId: string, campaignId: string, runId: string): string {
@@ -353,6 +401,7 @@ function mapFailure(error: unknown): {
   status: RunStatus;
   failureKind?: RunFailureKind;
   message: string;
+  eventPayload?: Record<string, unknown>;
 } {
   if (error instanceof RunCancelledError) {
     return {
@@ -367,6 +416,20 @@ function mapFailure(error: unknown): {
       status: "blocked",
       failureKind: error.failureKind,
       message: redactSecrets(error.message)
+    };
+  }
+
+  if (error instanceof EvidenceBudgetExceededError) {
+    return {
+      status: "blocked",
+      failureKind: "budget_guardrail",
+      message: redactSecrets(error.message),
+      eventPayload: {
+        budgetKey: error.budgetKey,
+        limit: error.limit,
+        observed: error.observed,
+        actionTaken: "blocked"
+      }
     };
   }
 
@@ -734,11 +797,8 @@ export async function executeRunById(runId: string, workerId: string): Promise<{
     maxAttempts: context.run_max_attempts
   });
 
-  const recipeEngine = new DefaultRecipeEngine([
-    new MavenCompilerTarget17Recipe(),
-    new MavenCompilerPluginBumpRecipe(),
-    new MavenSurefireSafeRecipe()
-  ]);
+  const recipePack = campaign.recipePack?.trim() || DEFAULT_RECIPE_PACK;
+  const recipeEngine = createRecipeEngineForPack(recipePack);
 
   const evidenceRoot = resolve(process.cwd(), process.env.EVIDENCE_ROOT ?? "./evidence");
   const evidenceExportRoot = resolve(
@@ -1017,7 +1077,10 @@ export async function executeRunById(runId: string, workerId: string): Promise<{
         mapped.status === "cancelled"
           ? "Run cancelled by operator request"
           : mapped.message,
-      payload: mapped.failureKind ? { failureKind: mapped.failureKind } : {}
+      payload: {
+        ...(mapped.failureKind ? { failureKind: mapped.failureKind } : {}),
+        ...(mapped.eventPayload ?? {})
+      }
     });
   } finally {
     if (preparedWorkspace) {

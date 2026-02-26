@@ -99,6 +99,10 @@ function withFailureClassification(
     buildSystem: ScanResult["buildSystem"];
   }
 ): CheckResult {
+  if (check.failureKind) {
+    return check;
+  }
+
   if (check.status === "passed") {
     return check;
   }
@@ -121,6 +125,26 @@ function withFailureClassification(
     ...check,
     failureKind,
     blockedReason
+  };
+}
+
+function buildBudgetExceededResult(input: {
+  command: string;
+  args: string[];
+  key: "maxVerifyMinutesPerRun" | "maxVerifyRetries";
+  limit: number;
+  observed: number;
+  reason: string;
+}): CheckResult {
+  return {
+    status: "failed",
+    command: [input.command, ...input.args].join(" "),
+    reason: input.reason,
+    failureKind: "budget_exceeded",
+    blockedReason: `Budget guardrail hit: ${input.key} limit=${input.limit}, observed=${input.observed}`,
+    budgetKey: input.key,
+    budgetLimit: input.limit,
+    budgetObserved: input.observed
   };
 }
 
@@ -181,14 +205,56 @@ async function runCommandWithClassification(input: {
   command: string;
   args: string[];
   repoPath: string;
+  verifyBudget?: {
+    startedAtMs: number;
+    deadlineMs: number;
+    maxVerifyMinutesPerRun: number;
+  };
 }): Promise<CheckResult> {
+  if (input.verifyBudget) {
+    const remainingMs = input.verifyBudget.deadlineMs - Date.now();
+    if (remainingMs <= 0) {
+      const observedMinutes = Number(
+        ((Date.now() - input.verifyBudget.startedAtMs) / 60_000).toFixed(2)
+      );
+      return buildBudgetExceededResult({
+        command: input.command,
+        args: input.args,
+        key: "maxVerifyMinutesPerRun",
+        limit: input.verifyBudget.maxVerifyMinutesPerRun,
+        observed: observedMinutes,
+        reason: "Verification runtime budget exhausted before command execution"
+      });
+    }
+  }
+
+  const timeoutMs = input.verifyBudget
+    ? Math.max(1, input.verifyBudget.deadlineMs - Date.now())
+    : undefined;
   const result = await runCommand(
     {
       command: input.command,
       args: input.args
     },
-    input.repoPath
+    input.repoPath,
+    { timeoutMs }
   );
+
+  if (result.status === "failed" && result.timedOut && input.verifyBudget) {
+    const observedMinutes = Number(
+      ((Date.now() - input.verifyBudget.startedAtMs) / 60_000).toFixed(2)
+    );
+    const budgetResult = buildBudgetExceededResult({
+      command: input.command,
+      args: input.args,
+      key: "maxVerifyMinutesPerRun",
+      limit: input.verifyBudget.maxVerifyMinutesPerRun,
+      observed: observedMinutes,
+      reason: "Verification command timed out due to maxVerifyMinutesPerRun budget"
+    });
+    budgetResult.output = result.output;
+    return budgetResult;
+  }
 
   const classified = withFailureClassification(result, {
     command: input.command,
@@ -211,6 +277,11 @@ async function maybeRunMavenPrefetch(input: {
   scan: ScanResult;
   repoPath: string;
   policy: PolicyConfig;
+  verifyBudget?: {
+    startedAtMs: number;
+    deadlineMs: number;
+    maxVerifyMinutesPerRun: number;
+  };
 }): Promise<VerifyAttempt | undefined> {
   if (
     input.scan.buildSystem !== "maven" ||
@@ -225,7 +296,8 @@ async function maybeRunMavenPrefetch(input: {
     buildSystem: input.scan.buildSystem,
     command: "mvn",
     args,
-    repoPath: input.repoPath
+    repoPath: input.repoPath,
+    verifyBudget: input.verifyBudget
   });
 
   return buildAttempt({
@@ -245,14 +317,21 @@ async function runBuildCheck(input: {
     args: string[];
   };
   prefaceAttempts?: VerifyAttempt[];
+  verifyBudget?: {
+    startedAtMs: number;
+    deadlineMs: number;
+    maxVerifyMinutesPerRun: number;
+  };
 }): Promise<CheckResult> {
   const attempts: VerifyAttempt[] = [...(input.prefaceAttempts ?? [])];
+  let retryCount = 0;
 
   let current = await runCommandWithClassification({
     buildSystem: input.scan.buildSystem,
     command: input.commandSpec.command,
     args: input.commandSpec.args,
-    repoPath: input.repoPath
+    repoPath: input.repoPath,
+    verifyBudget: input.verifyBudget
   });
   attempts.push(
     buildAttempt({
@@ -270,13 +349,29 @@ async function runBuildCheck(input: {
   }
 
   if (shouldRetryArtifactResolution(current, input.policy)) {
+    if (retryCount >= input.policy.maxVerifyRetries) {
+      return {
+        ...buildBudgetExceededResult({
+          command: input.commandSpec.command,
+          args: input.commandSpec.args,
+          key: "maxVerifyRetries",
+          limit: input.policy.maxVerifyRetries,
+          observed: retryCount + 1,
+          reason: "Retry cap reached before attempting Maven cached-resolution retry"
+        }),
+        attempts
+      };
+    }
+
     const retryArgs = withForceUpdate(input.commandSpec.args);
     current = await runCommandWithClassification({
       buildSystem: input.scan.buildSystem,
       command: input.commandSpec.command,
       args: retryArgs,
-      repoPath: input.repoPath
+      repoPath: input.repoPath,
+      verifyBudget: input.verifyBudget
     });
+    retryCount += 1;
     attempts.push(
       buildAttempt({
         command: input.commandSpec.command,
@@ -293,12 +388,27 @@ async function runBuildCheck(input: {
     current.failureKind === "artifact_resolution" &&
     isCachedResolutionFailure(current)
   ) {
+    if (retryCount >= input.policy.maxVerifyRetries) {
+      return {
+        ...buildBudgetExceededResult({
+          command: input.commandSpec.command,
+          args: input.commandSpec.args,
+          key: "maxVerifyRetries",
+          limit: input.policy.maxVerifyRetries,
+          observed: retryCount + 1,
+          reason: "Retry cap reached before purge-and-retry path"
+        }),
+        attempts
+      };
+    }
+
     const purgeArgs = ["-q", "dependency:purge-local-repository"];
     const purgeResult = await runCommandWithClassification({
       buildSystem: input.scan.buildSystem,
       command: "mvn",
       args: purgeArgs,
-      repoPath: input.repoPath
+      repoPath: input.repoPath,
+      verifyBudget: input.verifyBudget
     });
     attempts.push(
       buildAttempt({
@@ -314,8 +424,10 @@ async function runBuildCheck(input: {
       buildSystem: input.scan.buildSystem,
       command: input.commandSpec.command,
       args: retryArgs,
-      repoPath: input.repoPath
+      repoPath: input.repoPath,
+      verifyBudget: input.verifyBudget
     });
+    retryCount += 1;
     attempts.push(
       buildAttempt({
         command: input.commandSpec.command,
@@ -334,12 +446,19 @@ async function runBuildCheck(input: {
 
 export class DefaultVerifier implements VerifierPort {
   async run(scan: ScanResult, repoPath: string, policy: PolicyConfig): Promise<VerifySummary> {
+    const startedAtMs = Date.now();
+    const verifyBudget = {
+      startedAtMs,
+      deadlineMs: startedAtMs + policy.maxVerifyMinutesPerRun * 60_000,
+      maxVerifyMinutesPerRun: policy.maxVerifyMinutesPerRun
+    };
     const buildCommand = getBuildCommand(scan.buildSystem);
     const testCommand = getTestCommand(scan.buildSystem);
     const prefetchAttempt = await maybeRunMavenPrefetch({
       scan,
       repoPath,
-      policy
+      policy,
+      verifyBudget
     });
 
     const compile =
@@ -349,7 +468,8 @@ export class DefaultVerifier implements VerifierPort {
             repoPath,
             policy,
             commandSpec: buildCommand,
-            prefaceAttempts: prefetchAttempt ? [prefetchAttempt] : undefined
+            prefaceAttempts: prefetchAttempt ? [prefetchAttempt] : undefined,
+            verifyBudget
           })
         : buildMissingCommandResult({
             buildSystem: scan.buildSystem,
@@ -370,7 +490,8 @@ export class DefaultVerifier implements VerifierPort {
             scan,
             repoPath,
             policy,
-            commandSpec: testCommand
+            commandSpec: testCommand,
+            verifyBudget
           })
         : buildMissingCommandResult({
             buildSystem: scan.buildSystem,

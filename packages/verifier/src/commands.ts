@@ -35,11 +35,17 @@ export function getTestCommand(buildSystem: BuildSystem): CommandSpec | undefine
   }
 }
 
-export async function runCommand(spec: CommandSpec, cwd: string): Promise<CheckResult> {
+export async function runCommand(
+  spec: CommandSpec,
+  cwd: string,
+  options?: {
+    timeoutMs?: number;
+  }
+): Promise<CheckResult> {
   try {
     const { stdout, stderr } = await execFileAsync(spec.command, spec.args, {
       cwd,
-      timeout: 300000,
+      timeout: options?.timeoutMs ?? 300000,
       maxBuffer: 10 * 1024 * 1024
     });
 
@@ -54,7 +60,13 @@ export async function runCommand(spec: CommandSpec, cwd: string): Promise<CheckR
       stdout?: string;
       stderr?: string;
       message?: string;
+      killed?: boolean;
+      signal?: NodeJS.Signals;
     };
+    const timedOut =
+      typedError.killed === true &&
+      (typedError.signal === "SIGTERM" ||
+        /timed?\s*out|timeout/i.test(typedError.message ?? ""));
 
     return {
       status: "failed",
@@ -64,7 +76,8 @@ export async function runCommand(spec: CommandSpec, cwd: string): Promise<CheckR
           ? typedError.code
           : undefined,
       reason: typedError.message ?? "command failed",
-      output: [typedError.stdout, typedError.stderr].filter(Boolean).join("\n")
+      output: [typedError.stdout, typedError.stderr].filter(Boolean).join("\n"),
+      timedOut
     };
   }
 }

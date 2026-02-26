@@ -137,7 +137,12 @@ export interface EvidenceWriterPort {
 }
 
 export interface EvidenceStorePort {
-  finalizeAndExport(runCtx: RunContext): Promise<{
+  finalizeAndExport(
+    runCtx: RunContext,
+    options?: {
+      maxEvidenceZipBytes?: number;
+    }
+  ): Promise<{
     manifest: EvidenceManifest;
     zip?: EvidenceExportArtifact;
     exports?: EvidenceExportArtifact[];

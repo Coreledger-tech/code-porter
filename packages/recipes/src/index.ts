@@ -3,3 +3,5 @@ export * from "./engine.js";
 export * from "./recipes/maven-compiler-target17.js";
 export * from "./recipes/maven-compiler-plugin-bump.js";
 export * from "./recipes/maven-surefire-safe.js";
+export * from "./recipes/maven-failsafe-safe.js";
+export * from "./recipes/maven-jar-plugin-bump.js";

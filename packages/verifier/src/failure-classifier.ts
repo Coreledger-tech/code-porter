@@ -105,5 +105,12 @@ export function suggestRemediations(check: CheckResult): string[] {
     ];
   }
 
+  if (failureKind === "budget_exceeded") {
+    return [
+      "Review run budget limits in policy (verify minutes, retries, evidence size).",
+      "Reduce recipe scope or split campaign into smaller runs."
+    ];
+  }
+
   return [];
 }

@@ -24,6 +24,7 @@ export type RunFailureKind =
   | "repo_write"
   | "workspace_prepare"
   | "workspace_cleanup"
+  | "budget_guardrail"
   | "cancelled"
   | "retry_exhausted"
   | "lease_reclaimed";
@@ -32,6 +33,7 @@ export type VerifyFailureKind =
   | "tool_missing"
   | "artifact_resolution"
   | "repo_unreachable"
+  | "budget_exceeded"
   | "unknown";
 
 export interface Project {
@@ -129,6 +131,10 @@ export interface PolicyConfig {
   requireTestsIfPresent: boolean;
   maxInflightRunsPerProject: number;
   maxInflightRunsGlobal: number;
+  maxVerifyMinutesPerRun: number;
+  maxVerifyRetries: number;
+  maxEvidenceZipBytes: number;
+  defaultRecipePack: string;
   allowedBuildSystems: BuildSystem[];
   verifyFailureMode: "deny" | "warn";
   verify: {
@@ -191,7 +197,11 @@ export interface CheckResult {
   exitCode?: number;
   reason?: string;
   output?: string;
+  timedOut?: boolean;
   failureKind?: VerifyFailureKind;
+  budgetKey?: "maxVerifyMinutesPerRun" | "maxVerifyRetries" | "maxEvidenceZipBytes";
+  budgetLimit?: number;
+  budgetObserved?: number;
   attempts?: VerifyAttempt[];
   blockedReason?: string;
 }

@@ -77,10 +77,34 @@ function s3Uri(bucket: string, objectKey: string): string {
   return `s3://${bucket}/${objectKey}`;
 }
 
+export class EvidenceBudgetExceededError extends Error {
+  readonly budgetKey = "maxEvidenceZipBytes";
+  readonly limit: number;
+  readonly observed: number;
+  readonly artifactPath: string;
+
+  constructor(input: {
+    limit: number;
+    observed: number;
+    artifactPath: string;
+  }) {
+    super(
+      `Evidence budget exceeded: maxEvidenceZipBytes=${input.limit}, observed=${input.observed}`
+    );
+    this.name = "EvidenceBudgetExceededError";
+    this.limit = input.limit;
+    this.observed = input.observed;
+    this.artifactPath = input.artifactPath;
+  }
+}
+
 export class LocalEvidenceStore implements EvidenceStorePort {
   constructor(private readonly writer: EvidenceWriterPort) {}
 
-  async finalizeAndExport(runCtx: RunContext): Promise<{
+  async finalizeAndExport(
+    runCtx: RunContext,
+    _options?: { maxEvidenceZipBytes?: number }
+  ): Promise<{
     manifest: EvidenceManifest;
     zip?: EvidenceExportArtifact;
     exports?: EvidenceExportArtifact[];
@@ -96,12 +120,15 @@ export class ZipEvidenceStore implements EvidenceStorePort {
     private readonly exportRoot: string
   ) {}
 
-  async finalizeAndExport(runCtx: RunContext): Promise<{
+  async finalizeAndExport(
+    runCtx: RunContext,
+    options?: { maxEvidenceZipBytes?: number }
+  ): Promise<{
     manifest: EvidenceManifest;
     zip?: EvidenceExportArtifact;
     exports?: EvidenceExportArtifact[];
   }> {
-    const baseResult = await this.baseStore.finalizeAndExport(runCtx);
+    const baseResult = await this.baseStore.finalizeAndExport(runCtx, options);
 
     const source = runDir(runCtx);
     const zipOutputDir = resolve(
@@ -117,8 +144,18 @@ export class ZipEvidenceStore implements EvidenceStorePort {
       targetZipPath: zipPath
     });
 
-    const zipSha256 = await hashFile(zipPath);
     const details = await stat(zipPath);
+    if (
+      typeof options?.maxEvidenceZipBytes === "number" &&
+      details.size > options.maxEvidenceZipBytes
+    ) {
+      throw new EvidenceBudgetExceededError({
+        limit: options.maxEvidenceZipBytes,
+        observed: details.size,
+        artifactPath: zipPath
+      });
+    }
+    const zipSha256 = await hashFile(zipPath);
 
     const exportArtifact: EvidenceExportArtifact = {
       type: "evidence.zip",
@@ -169,12 +206,15 @@ export class S3CompatibleEvidenceStore implements EvidenceStorePort {
     });
   }
 
-  async finalizeAndExport(runCtx: RunContext): Promise<{
+  async finalizeAndExport(
+    runCtx: RunContext,
+    options?: { maxEvidenceZipBytes?: number }
+  ): Promise<{
     manifest: EvidenceManifest;
     zip?: EvidenceExportArtifact;
     exports?: EvidenceExportArtifact[];
   }> {
-    const baseResult = await this.baseStore.finalizeAndExport(runCtx);
+    const baseResult = await this.baseStore.finalizeAndExport(runCtx, options);
 
     if (!baseResult.zip) {
       throw new Error("S3 evidence export requires a local evidence.zip artifact");

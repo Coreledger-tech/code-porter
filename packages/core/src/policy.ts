@@ -15,6 +15,7 @@ const ALL_FAILURE_KINDS: VerifyFailureKind[] = [
   "tool_missing",
   "artifact_resolution",
   "repo_unreachable",
+  "budget_exceeded",
   "unknown"
 ];
 
@@ -24,6 +25,10 @@ const DEFAULT_POLICY: PolicyConfig = {
   requireTestsIfPresent: true,
   maxInflightRunsPerProject: 2,
   maxInflightRunsGlobal: 10,
+  maxVerifyMinutesPerRun: 20,
+  maxVerifyRetries: 2,
+  maxEvidenceZipBytes: 50 * 1024 * 1024,
+  defaultRecipePack: "java-maven-plugin-modernize",
   allowedBuildSystems: ["maven", "gradle", "node"],
   verifyFailureMode: "deny",
   verify: {
@@ -31,7 +36,8 @@ const DEFAULT_POLICY: PolicyConfig = {
     nonBlockingFailureKinds: [
       "tool_missing",
       "artifact_resolution",
-      "repo_unreachable"
+      "repo_unreachable",
+      "budget_exceeded"
     ],
     retryOnCachedResolution: true,
     maven: {
@@ -64,6 +70,13 @@ function asPositiveInt(value: unknown, fallback: number): number {
 function asBoolean(value: unknown, fallback: boolean): boolean {
   if (typeof value === "boolean") {
     return value;
+  }
+  return fallback;
+}
+
+function asString(value: unknown, fallback: string): string {
+  if (typeof value === "string" && value.trim().length > 0) {
+    return value.trim();
   }
   return fallback;
 }
@@ -112,6 +125,7 @@ function deriveLegacyVerifyConfig(
         "tool_missing",
         "artifact_resolution",
         "repo_unreachable",
+        "budget_exceeded",
         "unknown"
       ],
       retryOnCachedResolution: true,
@@ -191,6 +205,22 @@ function normalizePolicy(raw: unknown): PolicyConfig {
     maxInflightRunsGlobal: asPositiveInt(
       config.maxInflightRunsGlobal,
       DEFAULT_POLICY.maxInflightRunsGlobal
+    ),
+    maxVerifyMinutesPerRun: asPositiveInt(
+      config.maxVerifyMinutesPerRun,
+      DEFAULT_POLICY.maxVerifyMinutesPerRun
+    ),
+    maxVerifyRetries: asPositiveInt(
+      config.maxVerifyRetries,
+      DEFAULT_POLICY.maxVerifyRetries
+    ),
+    maxEvidenceZipBytes: asPositiveInt(
+      config.maxEvidenceZipBytes,
+      DEFAULT_POLICY.maxEvidenceZipBytes
+    ),
+    defaultRecipePack: asString(
+      config.defaultRecipePack,
+      DEFAULT_POLICY.defaultRecipePack
     ),
     allowedBuildSystems: asStringArray(
       config.allowedBuildSystems,
