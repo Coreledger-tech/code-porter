@@ -80,6 +80,51 @@ Use this table as the minimum planning artifact before starting any pilot wave.
 4. Cancel criteria documented for this repo (policy misconfig, auth incident, infra degradation).
 5. Post-run evidence review owner assigned.
 
+## Pilot Automation Runbook
+Use the deterministic pilot script for a full 5-repo run.
+
+1. Prepare config from the example file:
+- `cp scripts/pilot-config.example.json /tmp/pilot-config.json`
+2. Update repos and owner metadata in `/tmp/pilot-config.json`.
+3. Run pilot:
+- `npm run pilot:run -- --config /tmp/pilot-config.json`
+4. Validate output:
+- console summary table
+- JSON artifact under `./evidence/pilot/<timestamp>/pilot-summary.json`
+
+### Locked Execution Rules
+1. Plans are enqueued for all repos first.
+2. Applies run strictly one-at-a-time in configured repo order.
+3. `429` responses are retried with bounded backoff.
+4. Budget events and retry counts are captured into the pilot summary.
+
+### Pilot Config Contract
+```json
+{
+  "apiBaseUrl": "http://localhost:3000",
+  "policyId": "pilot-conservative",
+  "recipePack": "java-maven-plugin-modernize",
+  "targetSelector": "main",
+  "window": "30d",
+  "pollIntervalMs": 2000,
+  "applyStartBackoffMs": 5000,
+  "maxApplyStartRetries": 12,
+  "repos": [
+    {
+      "name": "repo-1",
+      "owner": "org-a",
+      "repo": "service-a"
+    }
+  ]
+}
+```
+
+### Post-Wave Retro Handoff
+1. Run `GET /reports/pilot?window=30d`.
+2. Attach the pilot summary JSON.
+3. Fill [PILOT_RETRO_TEMPLATE.md](/Users/kelvinmusodza/Downloads/Code porter/docs/PILOT_RETRO_TEMPLATE.md).
+4. Capture prioritized pack proposals and assign owners for next sprint.
+
 ## v1.0.0 Exit Criteria
 Pilot exits to v1.0.0 when all targets are met over the last 30 days:
 

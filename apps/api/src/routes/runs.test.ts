@@ -122,15 +122,17 @@ describe("runsRouter", () => {
           }
         ]
       })
-      .mockResolvedValueOnce({
-        rows: [
-          {
-            status: "running",
-            lease_owner: "worker-1",
-            leased_at: "2026-02-26T00:00:00.000Z",
-            lease_expires_at: "2026-02-26T00:05:00.000Z"
-          }
-        ]
+	      .mockResolvedValueOnce({
+	        rows: [
+	          {
+	            status: "running",
+	            attempt_count: 2,
+	            max_attempts: 3,
+	            lease_owner: "worker-1",
+	            leased_at: "2026-02-26T00:00:00.000Z",
+	            lease_expires_at: "2026-02-26T00:05:00.000Z"
+	          }
+	        ]
       })
       .mockResolvedValueOnce({
         rows: [{ step: "verify", created_at: "2026-02-26T00:00:00.000Z" }]
@@ -157,12 +159,14 @@ describe("runsRouter", () => {
     expect((res.body as any).lastCiCheckedAt).toBe("2026-02-26T00:00:00.000Z");
     expect((res.body as any).evidenceZipUrl).toContain("/runs/run-1/evidence.zip");
     expect((res.body as any).evidenceManifestUrl).toContain("/runs/run-1/evidence.manifest");
-    expect((res.body as any).evidenceUrlMode).toBe("local_proxy");
-    expect((res.body as any).evidenceStorage).toBe("local_fs");
-    expect((res.body as any).queueStatus).toBe("running");
-    expect((res.body as any).lease).toEqual({
-      owner: "worker-1",
-      leasedAt: "2026-02-26T00:00:00.000Z",
+	    expect((res.body as any).evidenceUrlMode).toBe("local_proxy");
+	    expect((res.body as any).evidenceStorage).toBe("local_fs");
+	    expect((res.body as any).queueStatus).toBe("running");
+	    expect((res.body as any).attemptCount).toBe(2);
+	    expect((res.body as any).maxAttempts).toBe(3);
+	    expect((res.body as any).lease).toEqual({
+	      owner: "worker-1",
+	      leasedAt: "2026-02-26T00:00:00.000Z",
       leaseExpiresAt: "2026-02-26T00:05:00.000Z"
     });
     expect((res.body as any).currentStep).toBe("verify");

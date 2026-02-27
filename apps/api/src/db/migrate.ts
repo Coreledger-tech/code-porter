@@ -436,6 +436,16 @@ export async function runMigrations(): Promise<void> {
     ["default", "Default Policy", policyPath]
   );
 
+  await dbPool.query(
+    `insert into policies (id, name, config_path)
+     values ($1, $2, $3)
+     on conflict (id)
+     do update set
+       name = excluded.name,
+       config_path = excluded.config_path`,
+    ["pilot-conservative", "Pilot Conservative Policy", "./policies/pilot-conservative.yaml"]
+  );
+
   // eslint-disable-next-line no-console
   console.log("Migrations complete");
 }

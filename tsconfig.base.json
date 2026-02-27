@@ -16,6 +16,7 @@
   "include": [
     "apps/**/*.ts",
     "packages/**/*.ts",
-    "fixtures/**/*.ts"
+    "fixtures/**/*.ts",
+    "scripts/**/*.ts"
   ]
 }

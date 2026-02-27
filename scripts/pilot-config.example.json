@@ -1,0 +1,37 @@
+{
+  "apiBaseUrl": "http://localhost:3000",
+  "policyId": "pilot-conservative",
+  "recipePack": "java-maven-plugin-modernize",
+  "targetSelector": "main",
+  "window": "30d",
+  "pollIntervalMs": 2000,
+  "applyStartBackoffMs": 5000,
+  "maxApplyStartRetries": 12,
+  "repos": [
+    {
+      "name": "pilot-repo-1",
+      "owner": "example-org",
+      "repo": "service-1"
+    },
+    {
+      "name": "pilot-repo-2",
+      "owner": "example-org",
+      "repo": "service-2"
+    },
+    {
+      "name": "pilot-repo-3",
+      "owner": "example-org",
+      "repo": "service-3"
+    },
+    {
+      "name": "pilot-repo-4",
+      "owner": "example-org",
+      "repo": "service-4"
+    },
+    {
+      "name": "pilot-repo-5",
+      "owner": "example-org",
+      "repo": "service-5"
+    }
+  ]
+}

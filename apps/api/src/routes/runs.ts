@@ -33,6 +33,8 @@ interface RunRow {
 
 interface RunJobRow {
   status: "queued" | "running" | "completed" | "failed" | "cancelled";
+  attempt_count: number;
+  max_attempts: number;
   lease_owner: string | null;
   leased_at: string | null;
   lease_expires_at: string | null;
@@ -258,7 +260,12 @@ export function runsRouter(): Router {
       [runId]
     );
     const runJob = await query<RunJobRow>(
-      `select status, lease_owner, leased_at::text, lease_expires_at::text
+      `select status,
+              attempt_count,
+              max_attempts,
+              lease_owner,
+              leased_at::text,
+              lease_expires_at::text
        from run_jobs
        where run_id = $1`,
       [runId]
@@ -318,6 +325,14 @@ export function runsRouter(): Router {
       evidenceUrlMode: storage === "s3" ? mode : "local_proxy",
       evidenceStorage: storage,
       queueStatus: runJob.rows[0]?.status ?? "completed",
+      attemptCount:
+        runJob.rows[0]?.attempt_count === undefined
+          ? null
+          : Number(runJob.rows[0].attempt_count),
+      maxAttempts:
+        runJob.rows[0]?.max_attempts === undefined
+          ? null
+          : Number(runJob.rows[0].max_attempts),
       cancelRequestedAt:
         typeof run.summary?.cancelRequestedAt === "string"
           ? run.summary.cancelRequestedAt

@@ -22,7 +22,7 @@ function assertCleanTree(): void {
   const status = runChecked("git", ["status", "--porcelain"], { capture: true });
   if (status.length > 0) {
     throw new Error(
-      "Git working tree is not clean. Commit/stash changes before running release:rc."
+      "Git working tree is not clean. Move local artifacts (for example local PDFs) outside the repo or commit/stash changes before running release:rc."
     );
   }
 }
@@ -74,4 +74,3 @@ try {
   console.error(`[release:rc] ${message}`);
   process.exit(1);
 }
-
