@@ -49,7 +49,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
       resumeCampaignMock: vi.fn(),
       listSupportedRecipePacksMock: vi.fn(() => [
         "java-maven-core",
-        "java-maven-plugin-modernize"
+        "java-maven-plugin-modernize",
+        "java-maven-lombok-java17-pack"
       ]),
       defaultRecipePackIdMock: vi.fn(() => "java-maven-plugin-modernize"),
       RunThrottleError,
@@ -213,7 +214,11 @@ describe("campaignsRouter", () => {
     expect(res.body).toEqual({
       error: "unsupported recipePack",
       recipePack: "unknown-pack",
-      allowedRecipePacks: ["java-maven-core", "java-maven-plugin-modernize"],
+      allowedRecipePacks: [
+        "java-maven-core",
+        "java-maven-plugin-modernize",
+        "java-maven-lombok-java17-pack"
+      ],
       defaultRecipePack: "java-maven-plugin-modernize"
     });
   });

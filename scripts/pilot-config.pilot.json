@@ -1,7 +1,7 @@
 {
   "apiBaseUrl": "http://localhost:3000",
   "policyId": "pilot-conservative",
-  "recipePack": "java-maven-plugin-modernize",
+  "recipePack": "java-maven-lombok-java17-pack",
   "targetSelector": "main",
   "window": "7d",
   "pollIntervalMs": 2000,

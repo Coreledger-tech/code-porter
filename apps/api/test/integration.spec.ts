@@ -186,6 +186,42 @@ async function prepareNodeRepo(input: { repoName: string }): Promise<string> {
   return repoPath;
 }
 
+async function prepareGradleRepo(input: { repoName: string }): Promise<string> {
+  const repoPath = await mkdtemp(join(tmpdir(), `${input.repoName}-`));
+  await mkdir(join(repoPath, "src", "main", "java"), { recursive: true });
+  await writeFile(
+    join(repoPath, "build.gradle"),
+    "plugins { id 'java' }\nrepositories { mavenCentral() }\n",
+    "utf8"
+  );
+  await writeFile(join(repoPath, "src", "main", "java", "App.java"), "class App {}\n", "utf8");
+
+  await runGit(repoPath, ["init"]);
+  await runGit(repoPath, ["config", "user.email", "integration@codeporter.local"]);
+  await runGit(repoPath, ["config", "user.name", "Code Porter Integration"]);
+  await runGit(repoPath, ["add", "."]);
+  await runGit(repoPath, ["commit", "-m", "baseline gradle fixture"]);
+
+  return repoPath;
+}
+
+async function prepareNestedMavenRepo(input: { repoName: string }): Promise<string> {
+  const repoPath = await mkdtemp(join(tmpdir(), `${input.repoName}-`));
+  const modulePath = join(repoPath, "my-app");
+  const fixturePath = resolve(process.cwd(), "fixtures/java-maven-simple");
+  await mkdir(modulePath, { recursive: true });
+  await cp(fixturePath, modulePath, { recursive: true });
+  await writeFile(join(repoPath, "README.md"), "# nested maven repo\n", "utf8");
+
+  await runGit(repoPath, ["init"]);
+  await runGit(repoPath, ["config", "user.email", "integration@codeporter.local"]);
+  await runGit(repoPath, ["config", "user.name", "Code Porter Integration"]);
+  await runGit(repoPath, ["add", "."]);
+  await runGit(repoPath, ["commit", "-m", "baseline nested maven fixture"]);
+
+  return repoPath;
+}
+
 async function apiFetch<T>(baseUrl: string, path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${baseUrl}${path}`, options);
   const payload = await response.json();
@@ -673,6 +709,114 @@ describe("API integration", () => {
     expect(run.status).toBe("needs_review");
   });
 
+  it("runs planning against a nested Maven build root and records it in summary", async () => {
+    const repoPath = await prepareNestedMavenRepo({
+      repoName: "code-porter-int-nested-maven"
+    });
+    cleanupPaths.push(repoPath);
+
+    const project = await apiFetch<{ id: string }>(baseUrl, "/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "integration-nested-maven",
+        localPath: repoPath
+      })
+    });
+
+    const campaign = await apiFetch<{ id: string }>(baseUrl, "/campaigns", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectId: project.id,
+        policyId: "default",
+        recipePack: "java-maven-core"
+      })
+    });
+
+    const planStart = await apiFetch<{ runId: string; status: string }>(
+      baseUrl,
+      `/campaigns/${campaign.id}/plan`,
+      { method: "POST" }
+    );
+
+    const run = await waitForRunTerminal<{
+      status: string;
+      summary: {
+        scan?: {
+          selectedBuildSystem?: string;
+          selectedBuildRoot?: string;
+          selectedManifestPath?: string;
+        };
+      };
+    }>({
+      baseUrl,
+      runId: planStart.runId
+    });
+
+    expect(run.summary.scan?.selectedBuildSystem).toBe("maven");
+    expect(run.summary.scan?.selectedBuildRoot).toBe("my-app");
+    expect(run.summary.scan?.selectedManifestPath).toBe("my-app/pom.xml");
+  });
+
+  it("classifies policy-excluded gradle repos as unsupported_build_system", async () => {
+    const repoPath = await prepareGradleRepo({ repoName: "code-porter-int-gradle-policy" });
+    cleanupPaths.push(repoPath);
+
+    const project = await apiFetch<{ id: string }>(baseUrl, "/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "integration-gradle-policy",
+        localPath: repoPath
+      })
+    });
+
+    const campaign = await apiFetch<{ id: string }>(baseUrl, "/campaigns", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectId: project.id,
+        policyId: "pilot-conservative",
+        recipePack: "java-maven-core"
+      })
+    });
+
+    const applyStart = await apiFetch<{ runId: string; status: string }>(
+      baseUrl,
+      `/campaigns/${campaign.id}/apply`,
+      { method: "POST" }
+    );
+
+    const run = await waitForRunTerminal<{
+      status: string;
+      summary: {
+        failureKind?: string;
+        scan?: {
+          selectedBuildSystem?: string;
+          buildSystemDisposition?: string;
+          buildSystemReason?: string;
+        };
+      };
+    }>({
+      baseUrl,
+      runId: applyStart.runId
+    });
+
+    expect(run.status).toBe("needs_review");
+    expect(run.summary.failureKind).toBe("unsupported_build_system");
+    expect(run.summary.scan?.selectedBuildSystem).toBe("gradle");
+    expect(run.summary.scan?.buildSystemDisposition).toBe("excluded_by_policy");
+    expect(run.summary.scan?.buildSystemReason).toContain("excluded by policy");
+
+    const report = await apiFetch<{
+      topFailureKinds: Array<{ failureKind: string; count: number }>;
+    }>(baseUrl, "/reports/pilot?window=30d");
+    expect(
+      report.topFailureKinds.some((item) => item.failureKind === "unsupported_build_system")
+    ).toBe(true);
+  });
+
   it("returns blocked for dirty working tree precondition", async () => {
     const repoPath = await prepareMavenRepo({
       repoName: "code-porter-int-dirty",
@@ -1038,7 +1182,9 @@ describe("API integration", () => {
     cleanupPaths.push(remoteRepo);
     const remoteDefaultBranch = await runGitStdout(remoteRepo, ["rev-parse", "--abbrev-ref", "HEAD"]);
 
+    const originalAuthMode = process.env.GITHUB_AUTH_MODE;
     const originalToken = process.env.GITHUB_TOKEN;
+    process.env.GITHUB_AUTH_MODE = "pat";
     process.env.GITHUB_TOKEN = "integration-token";
     const realFetch = global.fetch;
 
@@ -1112,6 +1258,11 @@ describe("API integration", () => {
       expect(run.prUrl).toBe("https://github.com/Coreledger-tech/code-porter/pull/123");
       expect(run.summary.prUrl).toBe("https://github.com/Coreledger-tech/code-porter/pull/123");
     } finally {
+      if (originalAuthMode === undefined) {
+        delete process.env.GITHUB_AUTH_MODE;
+      } else {
+        process.env.GITHUB_AUTH_MODE = originalAuthMode;
+      }
       if (originalToken === undefined) {
         delete process.env.GITHUB_TOKEN;
       } else {
@@ -1286,7 +1437,9 @@ describe("API integration", () => {
       "HEAD"
     ]);
 
+    const originalAuthMode = process.env.GITHUB_AUTH_MODE;
     const originalToken = process.env.GITHUB_TOKEN;
+    process.env.GITHUB_AUTH_MODE = "pat";
     process.env.GITHUB_TOKEN = "integration-token";
     const realFetch = global.fetch;
 
@@ -1370,6 +1523,32 @@ describe("API integration", () => {
         runId: applyStart.runId
       });
 
+      let prePollRun: {
+        id: string;
+        prUrl: string | null;
+        prNumber: number | null;
+        prState: string | null;
+      } | null = null;
+      const prePollDeadline = Date.now() + 5_000;
+      while (Date.now() < prePollDeadline) {
+        prePollRun = await apiFetch<{
+          id: string;
+          prUrl: string | null;
+          prNumber: number | null;
+          prState: string | null;
+        }>(baseUrl, `/runs/${applyStart.runId}`);
+
+        if (prePollRun.prUrl && prePollRun.prState === "open") {
+          break;
+        }
+
+        await sleep(100);
+      }
+
+      expect(prePollRun?.prUrl).toBe("https://github.com/Coreledger-tech/code-porter/pull/789");
+      expect(prePollRun?.prNumber).toBe(789);
+      expect(prePollRun?.prState).toBe("open");
+
       const poller = new PrLifecyclePollerWorker({
         batchSize: 10,
         timeoutMs: 2_000
@@ -1399,6 +1578,11 @@ describe("API integration", () => {
       expect(recent?.mergeState).toBe("merged");
       expect(recent?.prState).toBe("merged");
     } finally {
+      if (originalAuthMode === undefined) {
+        delete process.env.GITHUB_AUTH_MODE;
+      } else {
+        process.env.GITHUB_AUTH_MODE = originalAuthMode;
+      }
       if (originalToken === undefined) {
         delete process.env.GITHUB_TOKEN;
       } else {

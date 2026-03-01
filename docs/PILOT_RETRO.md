@@ -113,3 +113,80 @@
 | P0 | Add explicit unsupported-build-system classification/preflight for pilot campaigns | Engineering | 2026-03-05 | proposed |
 | P1 | Define a narrow `java-gradle-java17-baseline-pack` and a Gradle-safe pilot policy | Engineering | 2026-03-12 | proposed |
 | P1 | Re-run the pilot after Lombok and preflight work, using the same 5-repo cohort | Operations | 2026-03-12 | proposed |
+
+## Iteration 1 Results
+- Iteration artifact: `/Users/kelvinmusodza/Downloads/Code porter/evidence/pilot/2026-03-01T19-11-00-572Z/pilot-summary.json`
+- Generated at: `2026-03-01T19:11:00.576Z`
+- Policy ID: `pilot-conservative`
+- Recipe pack: `java-maven-lombok-java17-pack`
+
+### Baseline vs Iteration 1
+| metric | baseline corrected cohort | iteration 1 |
+| --- | --- | --- |
+| completed apply runs | `0` | `1` |
+| needs_review apply runs | `5` | `4` |
+| blocked apply runs | `0` | `0` |
+| open PRs | `1` | `2` |
+| merged PRs | `0` | `0` |
+| explicit unsupported apply runs | `0` | `3` |
+| unknown build-system repo outcomes | `3` | `0` |
+| green verify count | `0` | `1` |
+
+### Cohort Outcome
+| repo | applyStatus | prUrl | key evidence |
+| --- | --- | --- | --- |
+| Java-Web-Crawler | `completed` | `https://github.com/Coreledger-tech/Java-Web-Crawler/pull/1` | Nested Maven module at `my-app/pom.xml` was detected and executed from `selectedBuildRoot=my-app`. |
+| Axum-matching-engine | `needs_review` | `https://github.com/Coreledger-tech/Axum-matching-engine/pull/3` | Lombok plugin was bumped to `1.18.20.0`; original `IllegalAccessError` is gone, but `delombok` still fails with `NoSuchFieldError` and downstream missing builder symbols. |
+| authelia-TOTP | `needs_review` |  | Explicitly classified as `unsupported_build_system` with primary `go` and secondary `node` detections. |
+| Exception-handling-reconciliation | `needs_review` |  | Explicitly classified as `unsupported_build_system`; no supported manifest found within the scan depth. |
+| android-ESP-32-bluetooth-arduino | `needs_review` |  | Explicitly classified as `unsupported_build_system`; detected as `gradle` and excluded by Maven-only policy. |
+
+### Concrete Deltas
+- `Java-Web-Crawler` no longer falls into `unknown`.
+  - Scan summary now records:
+    - `selectedBuildSystem = maven`
+    - `selectedBuildRoot = my-app`
+    - `selectedManifestPath = my-app/pom.xml`
+  - Apply run `a1fb5c6b-fdcf-4bc5-9b47-dca588a824c0` completed with score `86` and opened PR `#1`.
+- `Axum-matching-engine` no longer fails with the previous Lombok `IllegalAccessError`.
+  - Baseline failure: `lombok-maven-plugin:1.18.12.0` with `IllegalAccessError`.
+  - Iteration 1 failure: `lombok-maven-plugin:1.18.20.0` with `NoSuchFieldError` during `delombok`, followed by missing generated builder symbols.
+  - This is progress: the original Java 17 plugin incompatibility signature is removed, but Lombok/delombok compatibility remains the active blocker.
+- Unsupported lanes are now explicit instead of opaque.
+  - Iteration artifact failure kinds: `unsupported_build_system=6`, `code_failure=1`, `unknown=0` within the cohort artifact.
+  - The aggregate `7d` report still shows `unknown=3` because it includes non-iteration rows and plan-mode runs without normalized failure kinds.
+
+### Iteration 1 Metrics Snapshot
+- Cohort statuses: `completed=1`, `needs_review=9`
+- Cohort failure kinds: `unsupported_build_system=6`, `code_failure=1`
+- PR outcomes: `open=2`, `merged=0`
+- Retries: `0`
+- Budget guardrails triggered: `0`
+- `/reports/pilot?window=7d` snapshot after rerun:
+  - `completed=1`, `needs_review=10`
+  - `topFailureKinds = unsupported_build_system(6), unknown(3), code_failure(2)`
+  - `mergeRate = 0`
+  - `retryRate = 1/11 = 9.09%`
+
+### Top 3 Blockers After Iteration 1
+1. Maven-only policy still excludes three repos from actionable execution.
+   - `authelia-TOTP`, `Exception-handling-reconciliation`, and `android-ESP-32-bluetooth-arduino` are now truthfully classified, but they still consume pilot attention without yielding modernization output.
+2. Axum still has a deterministic Lombok/delombok compatibility failure after the initial plugin bump.
+   - The active failure is now `NoSuchFieldError` in `lombok-maven-plugin:1.18.20.0`, not the original `IllegalAccessError`.
+3. Aggregate reporting still carries some `unknown` rows outside the cohort artifact.
+   - Cohort-level evidence is clean, but the 7-day aggregate still mixes in non-iteration rows and plan-mode runs that do not set a failure kind.
+
+### Prioritized Next Fixes
+#### Next 2 deterministic recipe candidates
+1. `java-maven-lombok-delombok-compat-pack`
+   - Target the remaining Axum blocker by handling legacy `lombok-maven-plugin` delombok usage more explicitly.
+   - Expected impact: convert the remaining Maven `code_failure` into either `completed` or a narrower next blocker.
+2. `java-gradle-java17-baseline-pack`
+   - The pilot has one explicit Gradle repo and zero Gradle lane coverage.
+   - Expected impact: turn `android-ESP-32-bluetooth-arduino` from policy-excluded to actionable in the next pilot wave.
+
+#### Next 2 verifier remediation candidates
+1. `unsupported-build-system preflight`
+   - Gate campaign start with the same scanner used at run time so non-Maven repos are identified before pilot slots are consumed.
+2. `lombok delombok compatibility diagnostics`
+   - Recognize `NoSuchFieldError` / `delombok` signatures separately from generic `code_failure` and emit targeted remediation guidance in evidence and reports.

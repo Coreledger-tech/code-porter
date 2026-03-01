@@ -28,6 +28,7 @@ import { MavenCompilerPluginBumpRecipe } from "@code-porter/recipes/src/recipes/
 import { MavenCompilerTarget17Recipe } from "@code-porter/recipes/src/recipes/maven-compiler-target17.js";
 import { MavenFailsafeSafeRecipe } from "@code-porter/recipes/src/recipes/maven-failsafe-safe.js";
 import { MavenJarPluginBumpRecipe } from "@code-porter/recipes/src/recipes/maven-jar-plugin-bump.js";
+import { MavenLombokPluginJava17BumpRecipe } from "@code-porter/recipes/src/recipes/maven-lombok-plugin-java17-bump.js";
 import { MavenSurefireSafeRecipe } from "@code-porter/recipes/src/recipes/maven-surefire-safe.js";
 import {
   DefaultVerifier,
@@ -193,9 +194,21 @@ function buildJavaMavenPluginModernizeRecipes(): Recipe[] {
   ];
 }
 
+function buildJavaMavenLombokJava17Recipes(): Recipe[] {
+  return [
+    new MavenCompilerTarget17Recipe(),
+    new MavenCompilerPluginBumpRecipe(),
+    new MavenLombokPluginJava17BumpRecipe(),
+    new MavenSurefireSafeRecipe(),
+    new MavenFailsafeSafeRecipe(),
+    new MavenJarPluginBumpRecipe()
+  ];
+}
+
 const RECIPE_PACK_FACTORIES: Record<string, () => Recipe[]> = {
   "java-maven-core": buildJavaMavenCoreRecipes,
-  "java-maven-plugin-modernize": buildJavaMavenPluginModernizeRecipes
+  "java-maven-plugin-modernize": buildJavaMavenPluginModernizeRecipes,
+  "java-maven-lombok-java17-pack": buildJavaMavenLombokJava17Recipes
 };
 
 export function listSupportedRecipePacks(): string[] {

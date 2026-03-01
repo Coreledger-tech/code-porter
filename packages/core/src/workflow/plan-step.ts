@@ -3,7 +3,16 @@ import { join } from "node:path";
 import type { PlanMetrics, ScanResult } from "../models.js";
 import type { FileMap, RecipeEnginePort, RecipePlanResult } from "../workflow-runner.js";
 
-const CANDIDATE_FILES = ["pom.xml", "build.gradle", "build.gradle.kts", "package.json"];
+const CANDIDATE_FILES = [
+  "pom.xml",
+  "build.gradle",
+  "build.gradle.kts",
+  "settings.gradle",
+  "settings.gradle.kts",
+  "package.json",
+  "pyproject.toml",
+  "go.mod"
+];
 
 export async function loadCandidateFiles(repoPath: string): Promise<FileMap> {
   const fileMap: FileMap = {};
@@ -45,7 +54,11 @@ export function runPlanStep(input: {
     planMetrics: {
       buildSystem: input.scan.buildSystem,
       filesChanged,
-      linesChanged
+      linesChanged,
+      selectedManifestPath: input.scan.metadata.selectedManifestPath ?? null,
+      selectedBuildRoot: input.scan.metadata.selectedBuildRoot ?? null,
+      buildSystemDisposition: input.scan.metadata.buildSystemDisposition,
+      buildSystemReason: input.scan.metadata.buildSystemReason
     }
   };
 }

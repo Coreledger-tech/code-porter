@@ -226,7 +226,7 @@ function normalizePolicy(raw: unknown): PolicyConfig {
       config.allowedBuildSystems,
       DEFAULT_POLICY.allowedBuildSystems
     ).filter((item): item is PolicyConfig["allowedBuildSystems"][number] => {
-      return ["maven", "gradle", "node", "unknown"].includes(item);
+      return ["maven", "gradle", "node", "python", "go", "unknown"].includes(item);
     }),
     verifyFailureMode,
     verify: normalizedVerify,
@@ -303,13 +303,24 @@ export class YamlPolicyEngine implements PolicyEngine {
 
   evaluatePlan(input: PlanMetrics, policy: PolicyConfig): PolicyDecision[] {
     const decisions: PolicyDecision[] = [];
+    const selectedManifestPath = input.selectedManifestPath ?? "none";
+    const selectedBuildRoot = input.selectedBuildRoot ?? ".";
+    const buildSystemReason =
+      input.buildSystemReason ?? `Build system '${input.buildSystem}' was detected`;
 
-    if (!policy.allowedBuildSystems.includes(input.buildSystem)) {
+    if (
+      input.buildSystemDisposition === "no_supported_manifest" ||
+      !policy.allowedBuildSystems.includes(input.buildSystem)
+    ) {
+      const reason =
+        input.buildSystemDisposition === "no_supported_manifest"
+          ? buildSystemReason
+          : `Build system '${input.buildSystem}' is not allowed by policy (manifest: '${selectedManifestPath}', build root: '${selectedBuildRoot}')`;
       decisions.push({
         id: "allowed_build_system",
         stage: "scan",
         status: "deny",
-        reason: `Build system '${input.buildSystem}' is not allowed by policy`,
+        reason,
         blocking: true
       });
     } else {
@@ -317,7 +328,7 @@ export class YamlPolicyEngine implements PolicyEngine {
         id: "allowed_build_system",
         stage: "scan",
         status: "allow",
-        reason: `Build system '${input.buildSystem}' is allowed`,
+        reason: `Build system '${input.buildSystem}' is allowed (manifest: '${selectedManifestPath}', build root: '${selectedBuildRoot}')`,
         blocking: false
       });
     }

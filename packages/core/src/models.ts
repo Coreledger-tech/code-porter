@@ -1,10 +1,14 @@
-export type BuildSystem = "maven" | "gradle" | "node" | "unknown";
+export type BuildSystem = "maven" | "gradle" | "node" | "python" | "go" | "unknown";
 export type ProjectType = "local" | "github";
 export type EvidenceLinkMode = "signed" | "public" | "local_proxy";
 export type EvidenceStorage = "local_fs" | "s3";
 export type GitHubAuthMode = "pat" | "app";
 export type CampaignLifecycleStatus = "active" | "paused";
 export type PullRequestState = "open" | "merged" | "closed";
+export type BuildSystemDisposition =
+  | "supported"
+  | "excluded_by_policy"
+  | "no_supported_manifest";
 
 export type RunMode = "plan" | "apply";
 
@@ -24,6 +28,7 @@ export type RunFailureKind =
   | "repo_write"
   | "workspace_prepare"
   | "workspace_cleanup"
+  | "unsupported_build_system"
   | "budget_guardrail"
   | "cancelled"
   | "retry_exhausted"
@@ -160,6 +165,13 @@ export interface Policy {
   config: PolicyConfig;
 }
 
+export interface BuildSystemDetection {
+  buildSystem: BuildSystem;
+  manifestPath: string;
+  buildRoot: string;
+  depth: number;
+}
+
 export interface ScanResult {
   buildSystem: BuildSystem;
   hasTests: boolean;
@@ -172,6 +184,12 @@ export interface ScanResult {
       node: boolean;
     };
     detectedFiles: string[];
+    detectedBuildSystems?: BuildSystem[];
+    detectedProjects?: BuildSystemDetection[];
+    selectedManifestPath?: string | null;
+    selectedBuildRoot?: string | null;
+    buildSystemDisposition?: BuildSystemDisposition;
+    buildSystemReason?: string;
   };
 }
 
@@ -179,6 +197,10 @@ export interface PlanMetrics {
   buildSystem: BuildSystem;
   filesChanged: number;
   linesChanged: number;
+  selectedManifestPath?: string | null;
+  selectedBuildRoot?: string | null;
+  buildSystemDisposition?: BuildSystemDisposition;
+  buildSystemReason?: string;
 }
 
 export interface VerifyAttempt {

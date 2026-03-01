@@ -1,10 +1,13 @@
+import { resolve } from "node:path";
 import type {
+  BuildSystemDisposition,
   PolicyConfig,
   PolicyDecision,
   Project,
   Run,
   RunMode,
   RunStatus,
+  ScanResult,
   ScoreResult,
   VerifyFailureKind,
   VerifySummary
@@ -31,6 +34,53 @@ import { runScanStep } from "./scan-step.js";
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function annotateScanForPolicy(scan: ScanResult, policy: PolicyConfig): ScanResult {
+  const selectedManifestPath = scan.metadata.selectedManifestPath ?? null;
+  const selectedBuildRoot = scan.metadata.selectedBuildRoot ?? null;
+
+  if (scan.metadata.buildSystemDisposition === "no_supported_manifest") {
+    return {
+      ...scan,
+      metadata: {
+        ...scan.metadata,
+        buildSystemDisposition: "no_supported_manifest" as BuildSystemDisposition,
+        buildSystemReason:
+          scan.metadata.buildSystemReason ?? "No supported build manifest found in root or depth<=2"
+      }
+    };
+  }
+
+  if (!policy.allowedBuildSystems.includes(scan.buildSystem)) {
+    return {
+      ...scan,
+      metadata: {
+        ...scan.metadata,
+        buildSystemDisposition: "excluded_by_policy" as BuildSystemDisposition,
+        buildSystemReason: `Build system '${scan.buildSystem}' excluded by policy (manifest: '${selectedManifestPath ?? "none"}', build root: '${selectedBuildRoot ?? "."}')`
+      }
+    };
+  }
+
+  return {
+    ...scan,
+    metadata: {
+      ...scan.metadata,
+      buildSystemDisposition: "supported" as BuildSystemDisposition,
+      buildSystemReason:
+        scan.metadata.buildSystemReason ??
+        `Selected build system '${scan.buildSystem}' from '${selectedManifestPath ?? "none"}'`
+    }
+  };
+}
+
+function resolveBuildRootPath(workingRepoPath: string, selectedBuildRoot?: string | null): string {
+  if (!selectedBuildRoot || selectedBuildRoot === ".") {
+    return workingRepoPath;
+  }
+
+  return resolve(workingRepoPath, selectedBuildRoot);
 }
 
 function summarizeStatus(
@@ -83,6 +133,16 @@ function gatherVerifyFailureKinds(summary: VerifySummary): VerifyFailureKind[] {
   }
 
   return [...new Set(kinds)];
+}
+
+function derivePrimaryVerifyFailureKind(summary: VerifySummary): VerifyFailureKind | undefined {
+  for (const check of [summary.compile, summary.tests, summary.staticChecks]) {
+    if (check.status !== "passed" && check.failureKind) {
+      return check.failureKind;
+    }
+  }
+
+  return undefined;
 }
 
 function deriveBlockedReason(
@@ -225,7 +285,12 @@ export async function executeWorkflow(input: {
     step: "scan",
     message: "Starting repository scan"
   });
-  const scanResult = await runScanStep(input.workingRepoPath);
+  const rawScanResult = await runScanStep(input.workingRepoPath);
+  const scanResult = annotateScanForPolicy(rawScanResult, policy);
+  const buildRootPath = resolveBuildRootPath(
+    input.workingRepoPath,
+    scanResult.metadata.selectedBuildRoot ?? null
+  );
   await input.evidenceWriter.write(runContext, "scan.json", scanResult);
   await emit({
     eventType: "step_end",
@@ -233,7 +298,10 @@ export async function executeWorkflow(input: {
     message: "Repository scan complete",
     payload: {
       buildSystem: scanResult.buildSystem,
-      hasTests: scanResult.hasTests
+      hasTests: scanResult.hasTests,
+      selectedBuildRoot: scanResult.metadata.selectedBuildRoot ?? ".",
+      selectedManifestPath: scanResult.metadata.selectedManifestPath ?? null,
+      buildSystemDisposition: scanResult.metadata.buildSystemDisposition ?? "supported"
     }
   });
 
@@ -242,7 +310,7 @@ export async function executeWorkflow(input: {
     step: "plan",
     message: "Planning deterministic changes"
   });
-  const files = await loadCandidateFiles(input.workingRepoPath);
+  const files = await loadCandidateFiles(buildRootPath);
   const { planResult, planMetrics } = runPlanStep({
     scan: scanResult,
     files,
@@ -278,7 +346,7 @@ export async function executeWorkflow(input: {
       message: "Applying deterministic recipes"
     });
     const applyStepResult = await runApplyStep({
-      repoPath: input.workingRepoPath,
+      repoPath: buildRootPath,
       campaignId: input.campaign.id,
       runId: input.run.id,
       scan: scanResult,
@@ -327,7 +395,7 @@ export async function executeWorkflow(input: {
       step: "verify",
       message: "Running verifier checks"
     });
-    verifySummary = await input.verifier.run(scanResult, input.workingRepoPath, policy);
+    verifySummary = await input.verifier.run(scanResult, buildRootPath, policy);
 
     if (input.remediator) {
       const remediation = input.remediator.appliesTo({
@@ -338,7 +406,7 @@ export async function executeWorkflow(input: {
         ? await input.remediator.run({
             scan: scanResult,
             verify: verifySummary,
-            repoPath: input.workingRepoPath,
+            repoPath: buildRootPath,
             policy,
             verifier: input.verifier
           })
@@ -444,8 +512,21 @@ export async function executeWorkflow(input: {
       ? "needs_review"
       : "completed";
 
+  const unsupportedBuildSystem =
+    scanResult.metadata.buildSystemDisposition === "excluded_by_policy" ||
+    scanResult.metadata.buildSystemDisposition === "no_supported_manifest";
+  const primaryVerifyFailureKind = derivePrimaryVerifyFailureKind(verifySummary);
+  const failureKind = budgetBlocked
+    ? "budget_guardrail"
+    : unsupportedBuildSystem
+      ? "unsupported_build_system"
+      : primaryVerifyFailureKind;
+
   const workspaceSummary = {
     workspacePath: input.workspace.workspacePath,
+    selectedBuildRootPath: buildRootPath,
+    selectedBuildRoot: scanResult.metadata.selectedBuildRoot ?? ".",
+    selectedManifestPath: scanResult.metadata.selectedManifestPath ?? null,
     resolvedBaseRef: input.workspace.resolvedBaseRef,
     defaultBranch: input.workspace.defaultBranch,
     cloneUrlUsed: input.workspace.cloneUrlUsed,
@@ -462,9 +543,18 @@ export async function executeWorkflow(input: {
     policyViolations: countPolicyViolations(policyDecisions),
     score: confidenceScore?.score ?? null,
     classification: confidenceScore?.classification ?? "blocked",
-    ...(budgetBlocked ? { failureKind: "budget_guardrail" } : {}),
+    ...(failureKind ? { failureKind } : {}),
     blockedReason,
     workspace: workspaceSummary,
+    scan: {
+      selectedBuildSystem: scanResult.buildSystem,
+      selectedBuildRoot: scanResult.metadata.selectedBuildRoot ?? ".",
+      selectedManifestPath: scanResult.metadata.selectedManifestPath ?? null,
+      buildSystemDisposition: scanResult.metadata.buildSystemDisposition ?? "supported",
+      buildSystemReason: scanResult.metadata.buildSystemReason ?? null,
+      detectedBuildSystems: scanResult.metadata.detectedBuildSystems ?? [],
+      detectedProjects: scanResult.metadata.detectedProjects ?? []
+    },
     applySummary
   });
 
@@ -485,6 +575,7 @@ export async function executeWorkflow(input: {
     status,
     summary,
     workingRepoPath: input.workingRepoPath,
+    buildRootPath,
     workspace: workspaceSummary
   });
 

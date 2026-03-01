@@ -45,7 +45,7 @@ export function classifyVerifyFailure(
   check: CheckResult,
   context: {
     command?: string;
-    buildSystem: "maven" | "gradle" | "node" | "unknown";
+    buildSystem: "maven" | "gradle" | "node" | "python" | "go" | "unknown";
   }
 ): VerifyFailureKind | undefined {
   if (check.status === "passed") {
