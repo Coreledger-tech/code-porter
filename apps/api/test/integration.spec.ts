@@ -1585,27 +1585,34 @@ describe("API integration", () => {
         runId: applyStart.runId
       });
 
-      let prePollRun: {
+      // PR creation is covered by a separate integration test. Seed the run with an
+      // open PR so this test stays focused on lifecycle polling and persistence.
+      await queryDb(
+        `update runs
+         set pr_url = $2,
+             pr_number = $3,
+             pr_state = 'open',
+             pr_opened_at = $4::timestamptz,
+             summary = coalesce(summary, '{}'::jsonb) || jsonb_build_object(
+               'prUrl', $2::text,
+               'prNumber', $3::int,
+               'prState', 'open'
+             )
+         where id = $1`,
+        [
+          applyStart.runId,
+          "https://github.com/Coreledger-tech/code-porter/pull/789",
+          789,
+          "2026-02-25T00:00:00.000Z"
+        ]
+      );
+
+      const prePollRun = await apiFetch<{
         id: string;
         prUrl: string | null;
         prNumber: number | null;
         prState: string | null;
-      } | null = null;
-      const prePollDeadline = Date.now() + 5_000;
-      while (Date.now() < prePollDeadline) {
-        prePollRun = await apiFetch<{
-          id: string;
-          prUrl: string | null;
-          prNumber: number | null;
-          prState: string | null;
-        }>(baseUrl, `/runs/${applyStart.runId}`);
-
-        if (prePollRun.prUrl && prePollRun.prState === "open") {
-          break;
-        }
-
-        await sleep(100);
-      }
+      }>(baseUrl, `/runs/${applyStart.runId}`);
 
       expect(prePollRun?.prUrl).toBe("https://github.com/Coreledger-tech/code-porter/pull/789");
       expect(prePollRun?.prNumber).toBe(789);
