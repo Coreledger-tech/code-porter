@@ -56,7 +56,12 @@ describe("reportsRouter", () => {
   it("returns pilot report aggregates", async () => {
     queryMock
       .mockResolvedValueOnce({ rows: [{ status: "completed", count: 6 }, { status: "blocked", count: 2 }] })
-      .mockResolvedValueOnce({ rows: [{ failure_kind: "artifact_resolution", count: 2 }] })
+      .mockResolvedValueOnce({
+        rows: [
+          { failure_kind: "java17_plugin_incompat", count: 3 },
+          { failure_kind: "artifact_resolution", count: 2 }
+        ]
+      })
       .mockResolvedValueOnce({ rows: [{ failure_kind: "artifact_resolution", count: 2 }] })
       .mockResolvedValueOnce({ rows: [{ opened: 5, merged: 3, closed_unmerged: 1, open: 1 }] })
       .mockResolvedValueOnce({ rows: [{ sample_size: 3, p50_hours: 10.5, p90_hours: 20.25 }] })
@@ -74,6 +79,10 @@ describe("reportsRouter", () => {
     expect(res.statusCode).toBe(200);
     expect((res.body as any).window).toBe("30d");
     expect((res.body as any).totalsByStatus.completed).toBe(6);
+    expect((res.body as any).topFailureKinds[0]).toEqual({
+      failureKind: "java17_plugin_incompat",
+      count: 3
+    });
     expect((res.body as any).prOutcomes.mergeRate).toBeCloseTo(0.6);
     expect((res.body as any).timeToGreen.p50Hours).toBeCloseTo(10.5);
     expect((res.body as any).retryRate.rate).toBeCloseTo(0.25);

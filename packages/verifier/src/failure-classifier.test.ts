@@ -66,6 +66,53 @@ describe("failure classifier", () => {
     expect(kind).toBe("code_failure");
   });
 
+  it("classifies lombok IllegalAccessError as java17 plugin incompatibility", () => {
+    const kind = classifyVerifyFailure(
+      {
+        status: "failed",
+        output:
+          "[ERROR] Failed to execute goal org.projectlombok:lombok-maven-plugin:1.18.12.0:delombok: IllegalAccessError"
+      },
+      {
+        buildSystem: "maven",
+        command: "mvn"
+      }
+    );
+
+    expect(kind).toBe("java17_plugin_incompat");
+  });
+
+  it("classifies lombok NoSuchFieldError delombok crashes as java17 plugin incompatibility", () => {
+    const kind = classifyVerifyFailure(
+      {
+        status: "failed",
+        output:
+          "[ERROR] lombok-maven-plugin: Unable to delombok: java.lang.NoSuchFieldError: JCImport qualid"
+      },
+      {
+        buildSystem: "maven",
+        command: "mvn"
+      }
+    );
+
+    expect(kind).toBe("java17_plugin_incompat");
+  });
+
+  it("does not over-classify unrelated NoSuchFieldError as plugin incompatibility", () => {
+    const kind = classifyVerifyFailure(
+      {
+        status: "failed",
+        output: "[ERROR] java.lang.NoSuchFieldError: unrelated class field"
+      },
+      {
+        buildSystem: "maven",
+        command: "mvn"
+      }
+    );
+
+    expect(kind).toBe("code_failure");
+  });
+
   it("detects cached resolution signal", () => {
     expect(
       isCachedResolutionFailure({

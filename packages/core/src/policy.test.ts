@@ -19,7 +19,10 @@ describe("YamlPolicyEngine", () => {
     expect(policy.maxEvidenceZipBytes).toBe(52428800);
     expect(policy.defaultRecipePack).toBe("java-maven-plugin-modernize");
     expect(policy.verifyFailureMode).toBe("warn");
-    expect(policy.verify.blockingFailureKinds).toEqual(["code_failure"]);
+    expect(policy.verify.blockingFailureKinds).toEqual([
+      "code_failure",
+      "java17_plugin_incompat"
+    ]);
     expect(policy.verify.nonBlockingFailureKinds).toContain("artifact_resolution");
     expect(policy.verify.retryOnCachedResolution).toBe(true);
     expect(policy.verify.maven.forceUpdate).toBe(true);
@@ -131,7 +134,10 @@ describe("YamlPolicyEngine", () => {
     const engine = new YamlPolicyEngine();
     const policy = await engine.load(policyPath);
 
-    expect(policy.verify.blockingFailureKinds).toEqual(["code_failure"]);
+    expect(policy.verify.blockingFailureKinds).toEqual([
+      "code_failure",
+      "java17_plugin_incompat"
+    ]);
     expect(policy.verify.nonBlockingFailureKinds).toContain("unknown");
     expect(policy.maxVerifyMinutesPerRun).toBe(20);
     expect(policy.maxVerifyRetries).toBe(2);

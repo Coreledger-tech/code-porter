@@ -759,6 +759,68 @@ describe("API integration", () => {
     expect(run.summary.scan?.selectedManifestPath).toBe("my-app/pom.xml");
   });
 
+  it("applies the lombok delombok compatibility pack and records the phase shift in evidence", async () => {
+    const lombokPom = await readFile(
+      resolve(process.cwd(), "fixtures/recipes/maven-lombok-delombok-phase-pom.xml"),
+      "utf8"
+    );
+    const repoPath = await prepareMavenRepo({
+      repoName: "code-porter-int-lombok-delombok",
+      mutatePom: () => lombokPom
+    });
+    cleanupPaths.push(repoPath);
+
+    const project = await apiFetch<{ id: string }>(baseUrl, "/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "integration-lombok-delombok",
+        localPath: repoPath
+      })
+    });
+
+    const campaign = await apiFetch<{ id: string }>(baseUrl, "/campaigns", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectId: project.id,
+        policyId: "default",
+        recipePack: "java-maven-lombok-delombok-compat-pack"
+      })
+    });
+
+    const applyStart = await apiFetch<{ runId: string; status: string }>(
+      baseUrl,
+      `/campaigns/${campaign.id}/apply`,
+      { method: "POST" }
+    );
+
+    const run = await waitForRunTerminal<{
+      status: string;
+      evidencePath: string;
+      evidenceArtifacts: Array<{ type: string; path: string }>;
+    }>({
+      baseUrl,
+      runId: applyStart.runId
+    });
+
+    expect(["completed", "needs_review", "blocked"]).toContain(run.status);
+
+    const applyPath = join(run.evidencePath, "apply.json");
+    const applyArtifact = JSON.parse(await readFile(applyPath, "utf8")) as {
+      recipesApplied?: string[];
+    };
+    expect(applyArtifact.recipesApplied).toContain(
+      "java.maven.lombok-delombok-prepare-package"
+    );
+
+    const diffArtifact = run.evidenceArtifacts.find((artifact) => artifact.type === "artifacts/diff.patch");
+    expect(diffArtifact).toBeDefined();
+    const diff = await readFile(diffArtifact!.path, "utf8");
+    expect(diff).toContain("generate-sources");
+    expect(diff).toContain("prepare-package");
+  });
+
   it("classifies policy-excluded gradle repos as unsupported_build_system", async () => {
     const repoPath = await prepareGradleRepo({ repoName: "code-porter-int-gradle-policy" });
     cleanupPaths.push(repoPath);
