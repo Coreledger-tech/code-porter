@@ -190,3 +190,23 @@
    - Gate campaign start with the same scanner used at run time so non-Maven repos are identified before pilot slots are consumed.
 2. `lombok delombok compatibility diagnostics`
    - Recognize `NoSuchFieldError` / `delombok` signatures separately from generic `code_failure` and emit targeted remediation guidance in evidence and reports.
+
+## Stage 2 / rc.2
+- Stage 2 scope stayed intentionally narrow: stabilize `release:rc`, merge the completed `Java-Web-Crawler` PR, and rerun only `Axum-matching-engine` with a deterministic Lombok delombok compatibility pack.
+- `Java-Web-Crawler` PR `#1` was squash-merged on `2026-03-01T20:22:44Z`.
+  - PR: `https://github.com/Coreledger-tech/Java-Web-Crawler/pull/1`
+  - This gives the pilot its first real merge and unblocks time-to-green measurement on the next report window.
+- `Axum-matching-engine` was rerun with `java-maven-lombok-delombok-compat-pack`.
+  - Apply run: `87483118-4a2c-4dbd-9c66-29e4b2252986`
+  - Replacement PR: `https://github.com/Coreledger-tech/Axum-matching-engine/pull/4`
+  - Superseded PR `#3` was closed after the rerun produced a better diff and evidence trail.
+- The Stage 1 Lombok delombok crash signature is eliminated.
+  - The rerun no longer fails inside `lombok-maven-plugin` with `NoSuchFieldError`, `JCImport`, or `qualid`.
+  - The current verifier output is now ordinary compile-time project breakage: missing Lombok-generated builders, missing `builder()` methods, and other downstream symbols.
+  - This is the minimum acceptable success condition for Stage 2 because the platform has moved from plugin/runtime incompatibility into the project's next real code-level blocker.
+- `v1.0.0-rc.2` was cut locally after a clean run of:
+  - `npm run typecheck`
+  - `npm test`
+  - `npm run test:integration`
+- The full 5-repo cohort rerun is deferred until the Gradle lane exists.
+  - Re-running the whole cohort now would mostly reconfirm the Maven-only boundary rather than produce new modernization signal.
