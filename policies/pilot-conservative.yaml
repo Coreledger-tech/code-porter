@@ -13,6 +13,7 @@ verifyFailureMode: warn
 verify:
   blockingFailureKinds:
     - code_failure
+    - java17_plugin_incompat
   nonBlockingFailureKinds:
     - tool_missing
     - artifact_resolution

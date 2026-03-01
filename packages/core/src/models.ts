@@ -39,6 +39,7 @@ export type VerifyFailureKind =
   | "artifact_resolution"
   | "repo_unreachable"
   | "budget_exceeded"
+  | "java17_plugin_incompat"
   | "unknown";
 
 export interface Project {

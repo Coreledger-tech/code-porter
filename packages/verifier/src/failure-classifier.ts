@@ -33,6 +33,14 @@ const ARTIFACT_PATTERNS = [
   /\.(lastupdated|lastUpdated)/i
 ];
 
+const JAVA17_PLUGIN_INCOMPAT_PATTERNS = [
+  /illegalaccesserror/i,
+  /nosuchfielderror/i,
+  /unable to delombok/i,
+  /\bjcimport\b/i,
+  /\bqualid\b/i
+];
+
 function matchesAny(text: string, patterns: RegExp[]): boolean {
   return patterns.some((pattern) => pattern.test(text));
 }
@@ -64,6 +72,13 @@ export function classifyVerifyFailure(
 
   if (matchesAny(text, ARTIFACT_PATTERNS)) {
     return "artifact_resolution";
+  }
+
+  if (
+    /lombok-maven-plugin/i.test(text) &&
+    matchesAny(text, JAVA17_PLUGIN_INCOMPAT_PATTERNS)
+  ) {
+    return "java17_plugin_incompat";
   }
 
   if (
@@ -109,6 +124,14 @@ export function suggestRemediations(check: CheckResult): string[] {
     return [
       "Review run budget limits in policy (verify minutes, retries, evidence size).",
       "Reduce recipe scope or split campaign into smaller runs."
+    ];
+  }
+
+  if (failureKind === "java17_plugin_incompat") {
+    return [
+      "Shift delombok execution out of compile/test path (prepare-package recommended).",
+      "Keep Lombok dependency version unchanged unless a separate compile failure proves otherwise.",
+      "Re-run verify after plugin lifecycle update."
     ];
   }
 

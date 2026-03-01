@@ -16,6 +16,7 @@ const ALL_FAILURE_KINDS: VerifyFailureKind[] = [
   "artifact_resolution",
   "repo_unreachable",
   "budget_exceeded",
+  "java17_plugin_incompat",
   "unknown"
 ];
 
@@ -32,7 +33,7 @@ const DEFAULT_POLICY: PolicyConfig = {
   allowedBuildSystems: ["maven", "gradle", "node"],
   verifyFailureMode: "deny",
   verify: {
-    blockingFailureKinds: ["code_failure"],
+    blockingFailureKinds: ["code_failure", "java17_plugin_incompat"],
     nonBlockingFailureKinds: [
       "tool_missing",
       "artifact_resolution",
@@ -120,7 +121,7 @@ function deriveLegacyVerifyConfig(
 ): PolicyConfig["verify"] {
   if (mode === "warn") {
     return {
-      blockingFailureKinds: ["code_failure"],
+      blockingFailureKinds: ["code_failure", "java17_plugin_incompat"],
       nonBlockingFailureKinds: [
         "tool_missing",
         "artifact_resolution",
