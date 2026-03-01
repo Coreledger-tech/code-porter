@@ -419,9 +419,10 @@ async function pollRunToTerminal(input: {
   throw new Error(`Timed out waiting for run ${input.runId} to reach terminal state`);
 }
 
-async function startApplyRunWithRetry(input: {
+async function startRunWithRetry(input: {
   apiBaseUrl: string;
   campaignId: string;
+  mode: "plan" | "apply";
   fetchImpl: typeof fetch;
   sleep: (ms: number) => Promise<void>;
   backoffMs: number;
@@ -433,7 +434,7 @@ async function startApplyRunWithRetry(input: {
     try {
       const response = await requestJson<{ runId: string; status: string }>(
         input.fetchImpl,
-        `${input.apiBaseUrl}/campaigns/${input.campaignId}/apply`,
+        `${input.apiBaseUrl}/campaigns/${input.campaignId}/${input.mode}`,
         { method: "POST" }
       );
       return response.runId;
@@ -443,18 +444,18 @@ async function startApplyRunWithRetry(input: {
       }
       if (attempt === input.maxRetries) {
         throw new Error(
-          `Apply enqueue throttled after ${input.maxRetries + 1} attempts for campaign ${input.campaignId}`
+          `${input.mode} enqueue throttled after ${input.maxRetries + 1} attempts for campaign ${input.campaignId}`
         );
       }
       input.logger.warn(
-        `Apply enqueue throttled for campaign ${input.campaignId}, retrying (${attempt + 1}/${input.maxRetries})`
+        `${input.mode} enqueue throttled for campaign ${input.campaignId}, retrying (${attempt + 1}/${input.maxRetries})`
       );
       await input.sleep(input.backoffMs);
       attempt += 1;
     }
   }
 
-  throw new Error(`Failed to enqueue apply run for campaign ${input.campaignId}`);
+  throw new Error(`Failed to enqueue ${input.mode} run for campaign ${input.campaignId}`);
 }
 
 function recommendationFromFailureKind(
@@ -667,22 +668,27 @@ export async function runPilot(
           projectId: project.id,
           policyId: config.policyId,
           recipePack: config.recipePack,
-          targetSelector: config.targetSelector
+          targetSelector: repo.defaultBranch ?? config.targetSelector
         })
       }
     );
 
-    const plan = await requestJson<{ runId: string; status: string }>(
+    const planRunId = await startRunWithRetry({
+      apiBaseUrl: config.apiBaseUrl,
+      campaignId: campaign.id,
+      mode: "plan",
       fetchImpl,
-      `${config.apiBaseUrl}/campaigns/${campaign.id}/plan`,
-      { method: "POST" }
-    );
+      sleep,
+      backoffMs: config.applyStartBackoffMs,
+      maxRetries: config.maxApplyStartRetries,
+      logger
+    });
 
     repos.push({
       repo,
       projectId: project.id,
       campaignId: campaign.id,
-      planRunId: plan.runId
+      planRunId
     });
   }
 
@@ -706,9 +712,10 @@ export async function runPilot(
 
   const repoResults: PilotRepoResult[] = [];
   for (const entry of repos) {
-    const applyRunId = await startApplyRunWithRetry({
+    const applyRunId = await startRunWithRetry({
       apiBaseUrl: config.apiBaseUrl,
       campaignId: entry.campaignId,
+      mode: "apply",
       fetchImpl,
       sleep,
       backoffMs: config.applyStartBackoffMs,

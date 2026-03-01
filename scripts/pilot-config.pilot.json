@@ -1,0 +1,42 @@
+{
+  "apiBaseUrl": "http://localhost:3000",
+  "policyId": "pilot-conservative",
+  "recipePack": "java-maven-plugin-modernize",
+  "targetSelector": "main",
+  "window": "7d",
+  "pollIntervalMs": 2000,
+  "applyStartBackoffMs": 5000,
+  "maxApplyStartRetries": 12,
+  "repos": [
+    {
+      "name": "Java-Web-Crawler",
+      "owner": "Coreledger-tech",
+      "repo": "Java-Web-Crawler",
+      "defaultBranch": "main"
+    },
+    {
+      "name": "Axum-matching-engine",
+      "owner": "Coreledger-tech",
+      "repo": "Axum-matching-engine",
+      "defaultBranch": "main"
+    },
+    {
+      "name": "authelia-TOTP",
+      "owner": "Coreledger-tech",
+      "repo": "authelia-TOTP",
+      "defaultBranch": "master"
+    },
+    {
+      "name": "Exception-handling-reconciliation",
+      "owner": "Coreledger-tech",
+      "repo": "Exception-handling-reconciliation",
+      "defaultBranch": "main"
+    },
+    {
+      "name": "android-ESP-32-bluetooth-arduino",
+      "owner": "Coreledger-tech",
+      "repo": "android-ESP-32-bluetooth-arduino",
+      "defaultBranch": "master"
+    }
+  ]
+}

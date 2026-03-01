@@ -42,7 +42,10 @@ function createMockPilotApi() {
   let projectCounter = 0;
   let campaignCounter = 0;
   const campaignOrder: string[] = [];
+  const campaignBodies: Array<Record<string, unknown>> = [];
+  const planStartAttempts = new Map<string, number>();
   const applyStartAttempts = new Map<string, number>();
+  const planStartSequence: string[] = [];
   const applyStartSequence: string[] = [];
   const runs = new Map<string, Record<string, unknown>>();
   const events = new Map<string, Array<Record<string, unknown>>>();
@@ -95,6 +98,9 @@ function createMockPilotApi() {
       campaignCounter += 1;
       const campaignId = `campaign-${campaignCounter}`;
       campaignOrder.push(campaignId);
+      if (init?.body && typeof init.body === "string") {
+        campaignBodies.push(JSON.parse(init.body));
+      }
       return jsonResponse({ id: campaignId }, 201);
     }
 
@@ -102,6 +108,15 @@ function createMockPilotApi() {
     if (method === "POST" && runPathMatch) {
       const campaignId = runPathMatch[1];
       const mode = runPathMatch[2];
+
+      if (mode === "plan") {
+        const attempts = (planStartAttempts.get(campaignId) ?? 0) + 1;
+        planStartAttempts.set(campaignId, attempts);
+        planStartSequence.push(campaignId);
+        if (campaignId === "campaign-3" && attempts === 1) {
+          return jsonResponse({ error: "run start throttled by policy" }, 429);
+        }
+      }
 
       if (mode === "apply") {
         const attempts = (applyStartAttempts.get(campaignId) ?? 0) + 1;
@@ -234,9 +249,12 @@ function createMockPilotApi() {
 
   return {
     fetchImpl,
+    planStartAttempts,
     applyStartAttempts,
+    planStartSequence,
     applyStartSequence,
-    campaignOrder
+    campaignOrder,
+    campaignBodies
   };
 }
 
@@ -262,7 +280,16 @@ describe("pilot-run script", () => {
     });
 
     expect(result.repos).toHaveLength(5);
+    expect(mockApi.planStartAttempts.get("campaign-3")).toBe(2);
     expect(mockApi.applyStartAttempts.get("campaign-2")).toBe(2);
+    expect(mockApi.planStartSequence).toEqual([
+      "campaign-1",
+      "campaign-2",
+      "campaign-3",
+      "campaign-3",
+      "campaign-4",
+      "campaign-5"
+    ]);
     expect(mockApi.applyStartSequence).toEqual([
       "campaign-1",
       "campaign-2",
@@ -285,10 +312,38 @@ describe("pilot-run script", () => {
       "java-maven-repository-resilience-pack",
       "java-junit5-transition-pack"
     ]);
+    expect(mockApi.campaignBodies[0]?.targetSelector).toBe("main");
+    expect(mockApi.campaignBodies[1]?.targetSelector).toBe("main");
 
     const summaryJson = JSON.parse(await readFile(result.outputPath, "utf8"));
     expect(summaryJson.repos).toHaveLength(5);
     expect(summaryJson.retryTotals.totalRetries).toBeGreaterThanOrEqual(1);
+  });
+
+  it("uses repo defaultBranch as the campaign target selector when provided", async () => {
+    const config = buildBaseConfig();
+    config.repos[2] = {
+      name: "repo-3",
+      owner: "org",
+      repo: "service-3",
+      defaultBranch: "master"
+    };
+    const mockApi = createMockPilotApi();
+    const outputRoot = await mkdtemp(join(tmpdir(), "code-porter-pilot-run-"));
+
+    await runPilot(config, {
+      fetchImpl: mockApi.fetchImpl,
+      sleep: async () => Promise.resolve(),
+      outputRoot,
+      now: () => new Date("2026-02-26T08:00:00.000Z"),
+      logger: {
+        info: () => {},
+        warn: () => {},
+        error: () => {}
+      }
+    });
+
+    expect(mockApi.campaignBodies[2]?.targetSelector).toBe("master");
   });
 
   it("validates that pilot config contains exactly five repos", () => {
