@@ -12,6 +12,7 @@ import type {
 } from "@code-porter/core/src/workflow-runner.js";
 import { isCachedResolutionFailure } from "./failure-classifier.js";
 import { runCommand } from "./commands.js";
+import { MavenCompileDeterministicRemediator } from "./compile-remediator.js";
 
 function gatherFailureKinds(verify: VerifySummary): VerifyFailureKind[] {
   const kinds: VerifyFailureKind[] = [];
@@ -74,7 +75,7 @@ async function runAction(input: {
   };
 }
 
-export class MavenDeterministicRemediator implements DeterministicRemediator {
+export class MavenInfraDeterministicRemediator implements DeterministicRemediator {
   appliesTo(input: {
     scan: ScanResult;
     verify: VerifySummary;
@@ -149,11 +150,7 @@ export class MavenDeterministicRemediator implements DeterministicRemediator {
       }
     }
 
-    let verifySummary = await input.verifier.run(
-      input.scan,
-      input.repoPath,
-      input.policy
-    );
+    let verifySummary = await input.verifier.run(input.scan, input.repoPath, input.policy);
 
     if (
       input.policy.verify.maven.purgeLocalCache &&
@@ -169,11 +166,7 @@ export class MavenDeterministicRemediator implements DeterministicRemediator {
         })
       );
 
-      verifySummary = await input.verifier.run(
-        input.scan,
-        input.repoPath,
-        input.policy
-      );
+      verifySummary = await input.verifier.run(input.scan, input.repoPath, input.policy);
     }
 
     return {
@@ -184,3 +177,86 @@ export class MavenDeterministicRemediator implements DeterministicRemediator {
     };
   }
 }
+
+export class CompositeDeterministicRemediator implements DeterministicRemediator {
+  constructor(
+    private readonly remediators: DeterministicRemediator[] = [
+      new MavenInfraDeterministicRemediator(),
+      new MavenCompileDeterministicRemediator()
+    ]
+  ) {}
+
+  appliesTo(input: {
+    scan: ScanResult;
+    verify: VerifySummary;
+    policy: PolicyConfig;
+  }): boolean {
+    return this.remediators.some((remediator) => remediator.appliesTo(input));
+  }
+
+  async run(input: {
+    scan: ScanResult;
+    verify: VerifySummary;
+    repoPath: string;
+    policy: PolicyConfig;
+    verifier: VerifierPort;
+  }): Promise<RemediationResult> {
+    let currentVerify = input.verify;
+    const actions: RemediationAction[] = [];
+    const artifacts: NonNullable<RemediationResult["artifacts"]> = [];
+    let applied = false;
+    let reason = "not_applicable";
+    let changedFiles = 0;
+    let changedLines = 0;
+    const rulesApplied: string[] = [];
+    let commitAfter: string | undefined;
+
+    for (const remediator of this.remediators) {
+      if (!remediator.appliesTo({ scan: input.scan, verify: currentVerify, policy: input.policy })) {
+        continue;
+      }
+
+      const result = await remediator.run({
+        scan: input.scan,
+        verify: currentVerify,
+        repoPath: input.repoPath,
+        policy: input.policy,
+        verifier: input.verifier
+      });
+
+      currentVerify = result.verifySummary;
+      actions.push(...result.actions);
+      artifacts.push(...(result.artifacts ?? []));
+      applied = applied || result.applied;
+      reason = result.reason ?? reason;
+      changedFiles += result.summary?.changedFiles ?? 0;
+      changedLines += result.summary?.changedLines ?? 0;
+      rulesApplied.push(...(result.summary?.rulesApplied ?? []));
+      commitAfter = result.summary?.commitAfter ?? commitAfter;
+    }
+
+    if (actions.length === 0) {
+      actions.push({
+        action: "deterministic_remediation",
+        status: "skipped",
+        reason: "No deterministic remediator matched the verify result"
+      });
+    }
+
+    return {
+      applied,
+      actions,
+      verifySummary: currentVerify,
+      reason,
+      artifacts,
+      summary: {
+        changedFiles,
+        changedLines,
+        rulesApplied: [...new Set(rulesApplied)],
+        commitAfter
+      }
+    };
+  }
+}
+
+export { MavenInfraDeterministicRemediator as MavenDeterministicRemediator };

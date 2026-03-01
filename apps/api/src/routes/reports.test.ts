@@ -58,18 +58,18 @@ describe("reportsRouter", () => {
       .mockResolvedValueOnce({ rows: [{ status: "completed", count: 6 }, { status: "blocked", count: 2 }] })
       .mockResolvedValueOnce({
         rows: [
-          { failure_kind: "java17_plugin_incompat", count: 3 },
-          { failure_kind: "artifact_resolution", count: 2 }
+          { failure_kind: "code_compile_failure", count: 3 },
+          { failure_kind: "code_test_failure", count: 2 }
         ]
       })
-      .mockResolvedValueOnce({ rows: [{ failure_kind: "artifact_resolution", count: 2 }] })
+      .mockResolvedValueOnce({ rows: [{ failure_kind: "code_compile_failure", count: 2 }] })
       .mockResolvedValueOnce({ rows: [{ opened: 5, merged: 3, closed_unmerged: 1, open: 1 }] })
       .mockResolvedValueOnce({ rows: [{ sample_size: 3, p50_hours: 10.5, p90_hours: 20.25 }] })
       .mockResolvedValueOnce({ rows: [{ total_runs: 8, retried_runs: 2 }] })
       .mockResolvedValueOnce({
         rows: [{ project_id: "p1", project_name: "demo", total_runs: 8, blocked_runs: 2, blocked_rate: 0.25 }]
       })
-      .mockResolvedValueOnce({ rows: [{ failure_kind: "artifact_resolution" }] });
+      .mockResolvedValueOnce({ rows: [{ failure_kind: "code_compile_failure" }] });
 
     const handler = findRouteHandler(reportsRouter(), "get", "/reports/pilot");
     const res = createMockRes();
@@ -80,7 +80,7 @@ describe("reportsRouter", () => {
     expect((res.body as any).window).toBe("30d");
     expect((res.body as any).totalsByStatus.completed).toBe(6);
     expect((res.body as any).topFailureKinds[0]).toEqual({
-      failureKind: "java17_plugin_incompat",
+      failureKind: "code_compile_failure",
       count: 3
     });
     expect((res.body as any).prOutcomes.mergeRate).toBeCloseTo(0.6);
@@ -89,7 +89,7 @@ describe("reportsRouter", () => {
     expect((res.body as any).worstOffendersByProject).toHaveLength(1);
     expect((res.body as any).worstOffendersByProject[0]).toMatchObject({
       projectId: "p1",
-      topFailureKind: "artifact_resolution"
+      topFailureKind: "code_compile_failure"
     });
   });
 

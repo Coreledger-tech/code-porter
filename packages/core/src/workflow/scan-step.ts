@@ -1,11 +1,12 @@
 import { execFile } from "node:child_process";
-import { access, readdir } from "node:fs/promises";
+import { access, readFile, readdir } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import type {
   BuildSystem,
   BuildSystemDetection,
   BuildSystemDisposition,
+  GradleProjectType,
   ScanResult
 } from "../models.js";
 
@@ -206,6 +207,82 @@ function buildDisposition(
   };
 }
 
+async function detectGradleMetadata(
+  repoRoot: string,
+  selectedProject: BuildSystemDetection | null
+): Promise<{
+  gradleWrapperPath: string | null;
+  gradleProjectType: GradleProjectType | null;
+}> {
+  if (!selectedProject || selectedProject.buildSystem !== "gradle") {
+    return {
+      gradleWrapperPath: null,
+      gradleProjectType: null
+    };
+  }
+
+  const buildRoot = selectedProject.buildRoot === "."
+    ? repoRoot
+    : join(repoRoot, selectedProject.buildRoot);
+  const wrapperAbsolute = join(buildRoot, "gradlew");
+  const gradleWrapperPath = (await fileExists(wrapperAbsolute))
+    ? normalizeRelativePath(
+        selectedProject.buildRoot === "."
+          ? "gradlew"
+          : join(selectedProject.buildRoot, "gradlew")
+      )
+    : null;
+
+  const candidates = [
+    join(buildRoot, "build.gradle"),
+    join(buildRoot, "build.gradle.kts"),
+    join(buildRoot, "settings.gradle"),
+    join(buildRoot, "settings.gradle.kts")
+  ];
+
+  let combined = "";
+  for (const candidate of candidates) {
+    if (!(await fileExists(candidate))) {
+      continue;
+    }
+    combined += `\n${await readFile(candidate, "utf8")}`;
+  }
+
+  if (combined.length === 0) {
+    return {
+      gradleWrapperPath,
+      gradleProjectType: "unknown"
+    };
+  }
+
+  if (
+    /com\.android\.application|com\.android\.library|id\("com\.android\.(application|library)"\)|android\s*\{/i.test(
+      combined
+    )
+  ) {
+    return {
+      gradleWrapperPath,
+      gradleProjectType: "android"
+    };
+  }
+
+  if (
+    /plugins\s*\{[\s\S]*?\bid\s+['"]java['"]|id\("java"\)|java-library|org\.jetbrains\.kotlin\.jvm/i.test(
+      combined
+    )
+  ) {
+    return {
+      gradleWrapperPath,
+      gradleProjectType: "jvm"
+    };
+  }
+
+  return {
+    gradleWrapperPath,
+    gradleProjectType: "unknown"
+  };
+}
+
 export async function runScanStep(repoPath: string): Promise<ScanResult> {
   const repoRoot = resolve(repoPath);
   const [directoryEntries, mvn, gradle, npm, node, gitBranch] = await Promise.all([
@@ -222,6 +299,7 @@ export async function runScanStep(repoPath: string): Promise<ScanResult> {
   const disposition = buildDisposition(selectedProject);
   const detectedFiles = [...new Set(detectedProjects.map((project) => project.manifestPath))];
   const detectedBuildSystems = [...new Set(detectedProjects.map((project) => project.buildSystem))];
+  const gradleMetadata = await detectGradleMetadata(repoRoot, selectedProject);
 
   return {
     buildSystem: disposition.buildSystem,
@@ -240,7 +318,9 @@ export async function runScanStep(repoPath: string): Promise<ScanResult> {
       selectedManifestPath: selectedProject?.manifestPath ?? null,
       selectedBuildRoot: selectedProject?.buildRoot ?? null,
       buildSystemDisposition: disposition.disposition,
-      buildSystemReason: disposition.reason
+      buildSystemReason: disposition.reason,
+      gradleWrapperPath: gradleMetadata.gradleWrapperPath,
+      gradleProjectType: gradleMetadata.gradleProjectType
     }
   };
 }

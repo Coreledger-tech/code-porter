@@ -63,6 +63,25 @@ function annotateScanForPolicy(scan: ScanResult, policy: PolicyConfig): ScanResu
     };
   }
 
+  if (
+    scan.buildSystem === "gradle" &&
+    scan.metadata.gradleProjectType &&
+    scan.metadata.gradleProjectType !== "jvm"
+  ) {
+    const subtype = scan.metadata.gradleProjectType;
+    return {
+      ...scan,
+      metadata: {
+        ...scan.metadata,
+        buildSystemDisposition: "unsupported_subtype" as BuildSystemDisposition,
+        buildSystemReason:
+          subtype === "android"
+            ? "Gradle Android projects are out of scope for the Stage 3 JVM-only lane"
+            : "Gradle project type could not be classified as JVM for the Stage 3 minimal lane"
+      }
+    };
+  }
+
   return {
     ...scan,
     metadata: {
@@ -425,7 +444,43 @@ export async function executeWorkflow(input: {
 
       verifySummary = remediation.verifySummary;
       remediationActions = remediation.actions;
-      await input.evidenceWriter.write(runContext, "agentic-remediation.json", remediation);
+      const remediationArtifactPayload = (remediation.artifacts ?? []).find(
+        (artifact) => artifact.type === "remediation.json"
+      )?.data;
+      const remediationPayload = {
+        ...(typeof remediationArtifactPayload === "object" && remediationArtifactPayload !== null
+          ? remediationArtifactPayload
+          : {}),
+        ...remediation,
+        summary: {
+          changedFiles: remediation.summary?.changedFiles ?? 0,
+          changedLines: remediation.summary?.changedLines ?? 0,
+          rulesApplied: remediation.summary?.rulesApplied ?? [],
+          commitAfter: remediation.summary?.commitAfter ?? null
+        }
+      };
+      await input.evidenceWriter.write(runContext, "remediation.json", remediationPayload);
+      await input.evidenceWriter.write(runContext, "agentic-remediation.json", remediationPayload);
+      for (const artifact of remediation.artifacts ?? []) {
+        if (artifact.type === "remediation.json") {
+          continue;
+        }
+        await input.evidenceWriter.write(runContext, artifact.type, artifact.data);
+      }
+      if (applySummary && remediation.summary) {
+        applySummary = {
+          ...applySummary,
+          commitAfter: remediation.summary.commitAfter ?? applySummary.commitAfter,
+          remediation: {
+            changedFiles: remediation.summary.changedFiles,
+            changedLines: remediation.summary.changedLines,
+            rulesApplied: remediation.summary.rulesApplied
+          }
+        };
+        if (typeof remediation.summary.commitAfter === "string") {
+          commitAfter = remediation.summary.commitAfter;
+        }
+      }
     }
     const budgetSignals = collectBudgetSignals(verifySummary);
     for (const signal of budgetSignals) {
@@ -514,6 +569,7 @@ export async function executeWorkflow(input: {
 
   const unsupportedBuildSystem =
     scanResult.metadata.buildSystemDisposition === "excluded_by_policy" ||
+    scanResult.metadata.buildSystemDisposition === "unsupported_subtype" ||
     scanResult.metadata.buildSystemDisposition === "no_supported_manifest";
   const primaryVerifyFailureKind = derivePrimaryVerifyFailureKind(verifySummary);
   const failureKind = budgetBlocked
@@ -552,6 +608,8 @@ export async function executeWorkflow(input: {
       selectedManifestPath: scanResult.metadata.selectedManifestPath ?? null,
       buildSystemDisposition: scanResult.metadata.buildSystemDisposition ?? "supported",
       buildSystemReason: scanResult.metadata.buildSystemReason ?? null,
+      gradleWrapperPath: scanResult.metadata.gradleWrapperPath ?? null,
+      gradleProjectType: scanResult.metadata.gradleProjectType ?? null,
       detectedBuildSystems: scanResult.metadata.detectedBuildSystems ?? [],
       detectedProjects: scanResult.metadata.detectedProjects ?? []
     },

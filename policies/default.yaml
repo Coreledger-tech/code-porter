@@ -14,6 +14,8 @@ allowedBuildSystems:
 verifyFailureMode: warn
 verify:
   blockingFailureKinds:
+    - code_compile_failure
+    - code_test_failure
     - code_failure
     - java17_plugin_incompat
   nonBlockingFailureKinds:
@@ -26,6 +28,18 @@ verify:
     forceUpdate: true
     prefetchPlugins: true
     purgeLocalCache: false
+remediation:
+  mavenCompile:
+    enabled: false
+    maxIterations: 2
+    maxFilesChangedPerIteration: 1
+    maxLinesChangedPerIteration: 25
+    maxFilesChangedTotal: 2
+    maxLinesChangedTotal: 40
+    allowedFixes:
+      - ensure_maven_compiler_plugin_for_lombok
+      - ensure_lombok_annotation_processor_path
+      - remove_proc_none
 confidenceThresholds:
   pass: 70
   needsReview: 55

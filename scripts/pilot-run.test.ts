@@ -21,8 +21,8 @@ function jsonResponse(body: unknown, status = 200): Response {
 function buildBaseConfig(): NormalizedPilotRunConfig {
   return normalizePilotConfig({
     apiBaseUrl: "http://pilot-api.local",
-    policyId: "pilot-conservative",
-    recipePack: "java-maven-plugin-modernize",
+    policyId: "pilot-stage3",
+    recipePack: "java-maven-lombok-delombok-compat-pack",
     targetSelector: "main",
     window: "30d",
     pollIntervalMs: 1,
@@ -60,7 +60,7 @@ function createMockPilotApi() {
     },
     topFailureKinds: [
       { failureKind: "artifact_resolution", count: 4 },
-      { failureKind: "code_failure", count: 2 },
+      { failureKind: "code_compile_failure", count: 2 },
       { failureKind: "tool_missing", count: 1 }
     ],
     blockedByFailureKind: [{ failureKind: "artifact_resolution", count: 1 }],
@@ -158,7 +158,7 @@ function createMockPilotApi() {
           },
           3: {
             status: "needs_review",
-            failureKind: "code_failure",
+            failureKind: "code_compile_failure",
             blockedReason: null,
             attemptCount: 1
           },
@@ -189,7 +189,23 @@ function createMockPilotApi() {
           summary: {
             status: stage.status,
             failureKind: stage.failureKind,
-            blockedReason: stage.blockedReason
+            blockedReason: stage.blockedReason,
+            scan: {
+              selectedBuildSystem: campaignNumber === 5 ? "gradle" : "maven",
+              buildSystemDisposition:
+                campaignNumber === 5 ? "unsupported_subtype" : "supported",
+              gradleProjectType: campaignNumber === 5 ? "android" : null
+            },
+            applySummary: {
+              remediation:
+                campaignNumber === 3
+                  ? {
+                      rulesApplied: ["ensure_lombok_annotation_processor_path"]
+                    }
+                  : {
+                      rulesApplied: []
+                    }
+            }
           }
         });
         const runEvents: Array<Record<string, unknown>> = [];
@@ -312,6 +328,14 @@ describe("pilot-run script", () => {
       "java-maven-repository-resilience-pack",
       "java-junit5-transition-pack"
     ]);
+    expect(result.repos[2].apply.remediationApplied).toBe(true);
+    expect(result.repos[2].apply.remediationRules).toEqual([
+      "ensure_lombok_annotation_processor_path"
+    ]);
+    expect(result.repos[4].apply.selectedBuildSystem).toBe("gradle");
+    expect(result.repos[4].apply.buildSystemDisposition).toBe("unsupported_subtype");
+    expect(result.repos[4].apply.gradleProjectType).toBe("android");
+    expect(result.ghcrVerificationMode).toBe("public");
     expect(mockApi.campaignBodies[0]?.targetSelector).toBe("main");
     expect(mockApi.campaignBodies[1]?.targetSelector).toBe("main");
 
@@ -346,6 +370,34 @@ describe("pilot-run script", () => {
     expect(mockApi.campaignBodies[2]?.targetSelector).toBe("master");
   });
 
+  it("uses repo-level policy and recipe pack overrides when provided", async () => {
+    const config = buildBaseConfig();
+    config.repos[4] = {
+      ...config.repos[4],
+      defaultBranch: "master",
+      policyId: "pilot-stage3",
+      recipePack: "java-gradle-java17-baseline-pack"
+    };
+    const mockApi = createMockPilotApi();
+    const outputRoot = await mkdtemp(join(tmpdir(), "code-porter-pilot-run-"));
+
+    await runPilot(config, {
+      fetchImpl: mockApi.fetchImpl,
+      sleep: async () => Promise.resolve(),
+      outputRoot,
+      now: () => new Date("2026-02-26T08:00:00.000Z"),
+      logger: {
+        info: () => {},
+        warn: () => {},
+        error: () => {}
+      }
+    });
+
+    expect(mockApi.campaignBodies[4]?.policyId).toBe("pilot-stage3");
+    expect(mockApi.campaignBodies[4]?.recipePack).toBe("java-gradle-java17-baseline-pack");
+    expect(mockApi.campaignBodies[4]?.targetSelector).toBe("master");
+  });
+
   it("validates that pilot config contains exactly five repos", () => {
     expect(() =>
       normalizePilotConfig({
@@ -363,7 +415,7 @@ describe("pilot-run script", () => {
         totalsByStatus: {},
         topFailureKinds: [
           { failureKind: "artifact_resolution", count: 5 },
-          { failureKind: "code_failure", count: 3 },
+          { failureKind: "code_compile_failure", count: 3 },
           { failureKind: "tool_missing", count: 2 }
         ],
         blockedByFailureKind: [],
@@ -390,7 +442,7 @@ describe("pilot-run script", () => {
 
     expect(recommendations.top3FailureKinds.map((item) => item.failureKind)).toEqual([
       "artifact_resolution",
-      "code_failure",
+      "code_compile_failure",
       "tool_missing"
     ]);
     expect(

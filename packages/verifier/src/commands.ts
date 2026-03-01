@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import type { BuildSystem, CheckResult } from "@code-porter/core/src/models.js";
+import type { CheckResult, ScanResult } from "@code-porter/core/src/models.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -9,12 +9,14 @@ export interface CommandSpec {
   args: string[];
 }
 
-export function getBuildCommand(buildSystem: BuildSystem): CommandSpec | undefined {
-  switch (buildSystem) {
+export function getBuildCommand(scan: ScanResult): CommandSpec | undefined {
+  switch (scan.buildSystem) {
     case "maven":
       return { command: "mvn", args: ["-q", "-DskipTests", "compile"] };
     case "gradle":
-      return { command: "gradle", args: ["build", "-x", "test"] };
+      return scan.metadata.gradleWrapperPath
+        ? { command: "sh", args: ["./gradlew", "--no-daemon", "-q", "classes"] }
+        : undefined;
     case "node":
       return { command: "npm", args: ["run", "build", "--if-present"] };
     default:
@@ -22,12 +24,14 @@ export function getBuildCommand(buildSystem: BuildSystem): CommandSpec | undefin
   }
 }
 
-export function getTestCommand(buildSystem: BuildSystem): CommandSpec | undefined {
-  switch (buildSystem) {
+export function getTestCommand(scan: ScanResult): CommandSpec | undefined {
+  switch (scan.buildSystem) {
     case "maven":
       return { command: "mvn", args: ["-q", "test"] };
     case "gradle":
-      return { command: "gradle", args: ["test"] };
+      return scan.metadata.gradleWrapperPath
+        ? { command: "sh", args: ["./gradlew", "--no-daemon", "-q", "test"] }
+        : undefined;
     case "node":
       return { command: "npm", args: ["test", "--if-present"] };
     default:

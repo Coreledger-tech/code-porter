@@ -77,6 +77,13 @@ export interface RemediationAction {
   args?: string[];
   output?: string;
   reason?: string;
+  filesChanged?: number;
+  linesChanged?: number;
+}
+
+export interface RemediationArtifact {
+  type: string;
+  data: unknown;
 }
 
 export interface RemediationResult {
@@ -84,6 +91,13 @@ export interface RemediationResult {
   actions: RemediationAction[];
   verifySummary: VerifySummary;
   reason?: string;
+  artifacts?: RemediationArtifact[];
+  summary?: {
+    changedFiles: number;
+    changedLines: number;
+    rulesApplied: string[];
+    commitAfter?: string;
+  };
 }
 
 export interface DeterministicRemediator {

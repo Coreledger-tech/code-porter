@@ -5,9 +5,11 @@ export type EvidenceStorage = "local_fs" | "s3";
 export type GitHubAuthMode = "pat" | "app";
 export type CampaignLifecycleStatus = "active" | "paused";
 export type PullRequestState = "open" | "merged" | "closed";
+export type GradleProjectType = "jvm" | "android" | "unknown";
 export type BuildSystemDisposition =
   | "supported"
   | "excluded_by_policy"
+  | "unsupported_subtype"
   | "no_supported_manifest";
 
 export type RunMode = "plan" | "apply";
@@ -34,6 +36,8 @@ export type RunFailureKind =
   | "retry_exhausted"
   | "lease_reclaimed";
 export type VerifyFailureKind =
+  | "code_compile_failure"
+  | "code_test_failure"
   | "code_failure"
   | "tool_missing"
   | "artifact_resolution"
@@ -153,6 +157,21 @@ export interface PolicyConfig {
       purgeLocalCache: boolean;
     };
   };
+  remediation?: {
+    mavenCompile?: {
+      enabled: boolean;
+      maxIterations: number;
+      maxFilesChangedPerIteration: number;
+      maxLinesChangedPerIteration: number;
+      maxFilesChangedTotal: number;
+      maxLinesChangedTotal: number;
+      allowedFixes: Array<
+        | "ensure_maven_compiler_plugin_for_lombok"
+        | "ensure_lombok_annotation_processor_path"
+        | "remove_proc_none"
+      >;
+    };
+  };
   confidenceThresholds: {
     pass: number;
     needsReview: number;
@@ -191,6 +210,8 @@ export interface ScanResult {
     selectedBuildRoot?: string | null;
     buildSystemDisposition?: BuildSystemDisposition;
     buildSystemReason?: string;
+    gradleWrapperPath?: string | null;
+    gradleProjectType?: GradleProjectType | null;
   };
 }
 

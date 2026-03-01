@@ -11,6 +11,8 @@ import type {
 import type { PolicyEngine } from "./workflow-runner.js";
 
 const ALL_FAILURE_KINDS: VerifyFailureKind[] = [
+  "code_compile_failure",
+  "code_test_failure",
   "code_failure",
   "tool_missing",
   "artifact_resolution",
@@ -33,7 +35,12 @@ const DEFAULT_POLICY: PolicyConfig = {
   allowedBuildSystems: ["maven", "gradle", "node"],
   verifyFailureMode: "deny",
   verify: {
-    blockingFailureKinds: ["code_failure", "java17_plugin_incompat"],
+    blockingFailureKinds: [
+      "code_compile_failure",
+      "code_test_failure",
+      "code_failure",
+      "java17_plugin_incompat"
+    ],
     nonBlockingFailureKinds: [
       "tool_missing",
       "artifact_resolution",
@@ -45,6 +52,21 @@ const DEFAULT_POLICY: PolicyConfig = {
       forceUpdate: true,
       prefetchPlugins: true,
       purgeLocalCache: false
+    }
+  },
+  remediation: {
+    mavenCompile: {
+      enabled: false,
+      maxIterations: 2,
+      maxFilesChangedPerIteration: 1,
+      maxLinesChangedPerIteration: 25,
+      maxFilesChangedTotal: 2,
+      maxLinesChangedTotal: 40,
+      allowedFixes: [
+        "ensure_maven_compiler_plugin_for_lombok",
+        "ensure_lombok_annotation_processor_path",
+        "remove_proc_none"
+      ]
     }
   },
   confidenceThresholds: {
@@ -121,7 +143,12 @@ function deriveLegacyVerifyConfig(
 ): PolicyConfig["verify"] {
   if (mode === "warn") {
     return {
-      blockingFailureKinds: ["code_failure", "java17_plugin_incompat"],
+      blockingFailureKinds: [
+        "code_compile_failure",
+        "code_test_failure",
+        "code_failure",
+        "java17_plugin_incompat"
+      ],
       nonBlockingFailureKinds: [
         "tool_missing",
         "artifact_resolution",
@@ -154,6 +181,7 @@ function normalizePolicy(raw: unknown): PolicyConfig {
   const config = (raw ?? {}) as Record<string, unknown>;
   const thresholds = (config.confidenceThresholds ?? {}) as Record<string, unknown>;
   const verify = (config.verify ?? null) as Record<string, unknown> | null;
+  const remediation = (config.remediation ?? null) as Record<string, unknown> | null;
 
   const verifyFailureMode = asVerifyFailureMode(
     config.verifyFailureMode,
@@ -191,6 +219,55 @@ function normalizePolicy(raw: unknown): PolicyConfig {
       )
     }
   };
+
+  const rawMavenCompileRemediation =
+    (remediation?.mavenCompile as Record<string, unknown> | undefined) ?? undefined;
+  const defaultMavenCompileRemediation = DEFAULT_POLICY.remediation?.mavenCompile;
+  const normalizedMavenCompileRemediation =
+    rawMavenCompileRemediation || defaultMavenCompileRemediation
+      ? {
+          enabled: asBoolean(
+            rawMavenCompileRemediation?.enabled,
+            defaultMavenCompileRemediation?.enabled ?? false
+          ),
+          maxIterations: asPositiveInt(
+            rawMavenCompileRemediation?.maxIterations,
+            defaultMavenCompileRemediation?.maxIterations ?? 2
+          ),
+          maxFilesChangedPerIteration: asPositiveInt(
+            rawMavenCompileRemediation?.maxFilesChangedPerIteration,
+            defaultMavenCompileRemediation?.maxFilesChangedPerIteration ?? 1
+          ),
+          maxLinesChangedPerIteration: asPositiveInt(
+            rawMavenCompileRemediation?.maxLinesChangedPerIteration,
+            defaultMavenCompileRemediation?.maxLinesChangedPerIteration ?? 25
+          ),
+          maxFilesChangedTotal: asPositiveInt(
+            rawMavenCompileRemediation?.maxFilesChangedTotal,
+            defaultMavenCompileRemediation?.maxFilesChangedTotal ?? 2
+          ),
+          maxLinesChangedTotal: asPositiveInt(
+            rawMavenCompileRemediation?.maxLinesChangedTotal,
+            defaultMavenCompileRemediation?.maxLinesChangedTotal ?? 40
+          ),
+          allowedFixes: asStringArray(
+            rawMavenCompileRemediation?.allowedFixes,
+            defaultMavenCompileRemediation?.allowedFixes ?? []
+          ).filter(
+            (
+              item
+            ): item is NonNullable<
+              NonNullable<PolicyConfig["remediation"]>["mavenCompile"]
+            >["allowedFixes"][number] => {
+              return [
+                "ensure_maven_compiler_plugin_for_lombok",
+                "ensure_lombok_annotation_processor_path",
+                "remove_proc_none"
+              ].includes(item);
+            }
+          )
+        }
+      : undefined;
 
   return {
     maxChangeLines: asNumber(config.maxChangeLines, DEFAULT_POLICY.maxChangeLines),
@@ -231,6 +308,12 @@ function normalizePolicy(raw: unknown): PolicyConfig {
     }),
     verifyFailureMode,
     verify: normalizedVerify,
+    remediation:
+      normalizedMavenCompileRemediation
+        ? {
+            mavenCompile: normalizedMavenCompileRemediation
+          }
+        : undefined,
     confidenceThresholds: {
       pass: asNumber(thresholds.pass, DEFAULT_POLICY.confidenceThresholds.pass),
       needsReview: asNumber(
@@ -310,12 +393,15 @@ export class YamlPolicyEngine implements PolicyEngine {
       input.buildSystemReason ?? `Build system '${input.buildSystem}' was detected`;
 
     if (
+      input.buildSystemDisposition === "unsupported_subtype" ||
       input.buildSystemDisposition === "no_supported_manifest" ||
       !policy.allowedBuildSystems.includes(input.buildSystem)
     ) {
       const reason =
         input.buildSystemDisposition === "no_supported_manifest"
           ? buildSystemReason
+          : input.buildSystemDisposition === "unsupported_subtype"
+            ? buildSystemReason
           : `Build system '${input.buildSystem}' is not allowed by policy (manifest: '${selectedManifestPath}', build root: '${selectedBuildRoot}')`;
       decisions.push({
         id: "allowed_build_system",

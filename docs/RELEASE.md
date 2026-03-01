@@ -10,6 +10,20 @@
 ### Registry
 - `ghcr.io/coreledger-tech/code-porter`
 
+### Visibility Model
+1. GitHub repository visibility does not make GHCR public automatically.
+2. GHCR visibility is package-level.
+3. Preferred verification path is a public package at `ghcr.io/coreledger-tech/code-porter`.
+4. Public verification path:
+```bash
+docker pull ghcr.io/coreledger-tech/code-porter:v1.0.0-rc.2
+```
+5. If the package is private, use:
+```bash
+echo "$GITHUB_TOKEN" | docker login ghcr.io -u <github-user> --password-stdin
+docker pull ghcr.io/coreledger-tech/code-porter:<tag>
+```
+
 ### Publish Flow
 1. Push semver tag (`v*`).
 2. GitHub Actions builds Docker image from root `Dockerfile`.
@@ -50,6 +64,7 @@
 1. `npm run typecheck`
 2. `npm test`
 3. `npm run test:integration`
+4. `npm run verify:ghcr -- --tag <tag>`
 4. smoke test:
 - enqueue run
 - confirm terminal status

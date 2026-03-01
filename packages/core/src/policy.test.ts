@@ -20,12 +20,15 @@ describe("YamlPolicyEngine", () => {
     expect(policy.defaultRecipePack).toBe("java-maven-plugin-modernize");
     expect(policy.verifyFailureMode).toBe("warn");
     expect(policy.verify.blockingFailureKinds).toEqual([
+      "code_compile_failure",
+      "code_test_failure",
       "code_failure",
       "java17_plugin_incompat"
     ]);
     expect(policy.verify.nonBlockingFailureKinds).toContain("artifact_resolution");
     expect(policy.verify.retryOnCachedResolution).toBe(true);
     expect(policy.verify.maven.forceUpdate).toBe(true);
+    expect(policy.remediation?.mavenCompile?.enabled).toBe(false);
     expect(policy.confidenceThresholds.pass).toBe(70);
   });
 
@@ -135,6 +138,8 @@ describe("YamlPolicyEngine", () => {
     const policy = await engine.load(policyPath);
 
     expect(policy.verify.blockingFailureKinds).toEqual([
+      "code_compile_failure",
+      "code_test_failure",
       "code_failure",
       "java17_plugin_incompat"
     ]);

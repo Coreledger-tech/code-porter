@@ -17,6 +17,8 @@ interface PilotRepoConfig {
   repo: string;
   cloneUrl?: string;
   defaultBranch?: string;
+  policyId?: string;
+  recipePack?: string;
 }
 
 interface PilotRunConfig {
@@ -86,6 +88,11 @@ interface PilotStageSummary {
   prUrl: string | null;
   prNumber: number | null;
   prState: string | null;
+  selectedBuildSystem: string | null;
+  buildSystemDisposition: string | null;
+  gradleProjectType: string | null;
+  remediationApplied: boolean;
+  remediationRules: string[];
 }
 
 interface PilotRepoResult {
@@ -157,6 +164,7 @@ interface PilotRunResult {
   reportWindow: PilotWindow;
   reportSnapshot: PilotReportResponse;
   recommendations: PilotRecommendationOutput;
+  ghcrVerificationMode: "public";
   outputPath: string;
 }
 
@@ -250,6 +258,12 @@ export function normalizePilotConfig(raw: unknown): NormalizedPilotRunConfig {
     if (typeof repo.defaultBranch === "string" && repo.defaultBranch.trim().length > 0) {
       normalizedRepo.defaultBranch = repo.defaultBranch.trim();
     }
+    if (typeof repo.policyId === "string" && repo.policyId.trim().length > 0) {
+      normalizedRepo.policyId = repo.policyId.trim();
+    }
+    if (typeof repo.recipePack === "string" && repo.recipePack.trim().length > 0) {
+      normalizedRepo.recipePack = repo.recipePack.trim();
+    }
     return normalizedRepo;
   });
 
@@ -336,6 +350,15 @@ function stageSummaryFromRun(
   budgetTriggers: BudgetTrigger[]
 ): PilotStageSummary {
   const summary = run.summary ?? {};
+  const scan = typeof summary.scan === "object" && summary.scan !== null
+    ? (summary.scan as Record<string, unknown>)
+    : {};
+  const applySummary = typeof summary.applySummary === "object" && summary.applySummary !== null
+    ? (summary.applySummary as Record<string, unknown>)
+    : {};
+  const remediation = typeof applySummary.remediation === "object" && applySummary.remediation !== null
+    ? (applySummary.remediation as Record<string, unknown>)
+    : {};
   const attemptCount =
     typeof run.attemptCount === "number" && Number.isFinite(run.attemptCount)
       ? Math.max(0, Math.floor(run.attemptCount))
@@ -359,7 +382,17 @@ function stageSummaryFromRun(
     budgetTriggers,
     prUrl: typeof run.prUrl === "string" ? run.prUrl : null,
     prNumber: typeof run.prNumber === "number" ? run.prNumber : null,
-    prState: typeof run.prState === "string" ? run.prState : null
+    prState: typeof run.prState === "string" ? run.prState : null,
+    selectedBuildSystem:
+      typeof scan.selectedBuildSystem === "string" ? scan.selectedBuildSystem : null,
+    buildSystemDisposition:
+      typeof scan.buildSystemDisposition === "string" ? scan.buildSystemDisposition : null,
+    gradleProjectType:
+      typeof scan.gradleProjectType === "string" ? scan.gradleProjectType : null,
+    remediationApplied: Array.isArray(remediation.rulesApplied) && remediation.rulesApplied.length > 0,
+    remediationRules: Array.isArray(remediation.rulesApplied)
+      ? remediation.rulesApplied.filter((value): value is string => typeof value === "string")
+      : []
   };
 }
 
@@ -472,6 +505,16 @@ function recommendationFromFailureKind(
   }
 
   if (failureKind === "code_failure") {
+    return {
+      id: "java-junit5-transition-pack",
+      type: "recipe_pack",
+      triggerFailureKinds: [failureKind],
+      rationale: "Code-level verifier failures commonly come from test framework drift during upgrades.",
+      expectedImpact: "Increase pass@1 by reducing deterministic test migration regressions."
+    };
+  }
+
+  if (failureKind === "code_compile_failure" || failureKind === "code_test_failure") {
     return {
       id: "java-junit5-transition-pack",
       type: "recipe_pack",
@@ -666,8 +709,8 @@ export async function runPilot(
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           projectId: project.id,
-          policyId: config.policyId,
-          recipePack: config.recipePack,
+          policyId: repo.policyId ?? config.policyId,
+          recipePack: repo.recipePack ?? config.recipePack,
           targetSelector: repo.defaultBranch ?? config.targetSelector
         })
       }
@@ -768,6 +811,7 @@ export async function runPilot(
     reportWindow: config.window,
     reportSnapshot: report,
     recommendations,
+    ghcrVerificationMode: "public",
     outputPath
   };
 

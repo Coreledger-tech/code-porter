@@ -6,9 +6,10 @@ maxInflightRunsGlobal: 2
 maxVerifyMinutesPerRun: 15
 maxVerifyRetries: 1
 maxEvidenceZipBytes: 41943040
-defaultRecipePack: java-maven-plugin-modernize
+defaultRecipePack: java-maven-lombok-delombok-compat-pack
 allowedBuildSystems:
   - maven
+  - gradle
 verifyFailureMode: warn
 verify:
   blockingFailureKinds:
@@ -28,7 +29,7 @@ verify:
     purgeLocalCache: false
 remediation:
   mavenCompile:
-    enabled: false
+    enabled: true
     maxIterations: 2
     maxFilesChangedPerIteration: 1
     maxLinesChangedPerIteration: 25
@@ -39,5 +40,5 @@ remediation:
       - ensure_lombok_annotation_processor_path
       - remove_proc_none
 confidenceThresholds:
-  pass: 70
-  needsReview: 55
+  pass: 80
+  needsReview: 60

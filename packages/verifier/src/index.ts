@@ -75,6 +75,22 @@ function commandAvailable(scan: ScanResult, command: "mvn" | "gradle" | "npm"): 
   return scan.metadata.toolAvailability[command];
 }
 
+function commandSpecAvailable(scan: ScanResult, command?: string): boolean {
+  if (!command) {
+    return false;
+  }
+
+  if (command === "mvn" || command === "gradle" || command === "npm") {
+    return commandAvailable(scan, command);
+  }
+
+  if (command === "sh") {
+    return true;
+  }
+
+  return true;
+}
+
 function buildAttempt(input: {
   command: string;
   args: string[];
@@ -97,6 +113,7 @@ function withFailureClassification(
   context: {
     command?: string;
     buildSystem: ScanResult["buildSystem"];
+    phase: "compile" | "tests" | "static";
   }
 ): CheckResult {
   if (check.failureKind) {
@@ -157,12 +174,15 @@ function buildMissingCommandResult(input: {
   const base: CheckResult = {
     status: "not_run",
     reason: input.reason,
-    command: input.command && input.args ? [input.command, ...input.args].join(" ") : undefined
+    command: input.command && input.args ? [input.command, ...input.args].join(" ") : undefined,
+    failureKind: "tool_missing",
+    blockedReason: input.reason
   };
 
   const classified = withFailureClassification(base, {
     command: input.command,
-    buildSystem: input.buildSystem
+    buildSystem: input.buildSystem,
+    phase: "compile"
   });
 
   if (input.command && input.args) {
@@ -205,6 +225,7 @@ async function runCommandWithClassification(input: {
   command: string;
   args: string[];
   repoPath: string;
+  phase: "compile" | "tests" | "static";
   verifyBudget?: {
     startedAtMs: number;
     deadlineMs: number;
@@ -258,7 +279,8 @@ async function runCommandWithClassification(input: {
 
   const classified = withFailureClassification(result, {
     command: input.command,
-    buildSystem: input.buildSystem
+    buildSystem: input.buildSystem,
+    phase: input.phase
   });
 
   return {
@@ -297,6 +319,7 @@ async function maybeRunMavenPrefetch(input: {
     command: "mvn",
     args,
     repoPath: input.repoPath,
+    phase: "compile",
     verifyBudget: input.verifyBudget
   });
 
@@ -316,6 +339,7 @@ async function runBuildCheck(input: {
     command: string;
     args: string[];
   };
+  phase: "compile" | "tests";
   prefaceAttempts?: VerifyAttempt[];
   verifyBudget?: {
     startedAtMs: number;
@@ -331,6 +355,7 @@ async function runBuildCheck(input: {
     command: input.commandSpec.command,
     args: input.commandSpec.args,
     repoPath: input.repoPath,
+    phase: input.phase,
     verifyBudget: input.verifyBudget
   });
   attempts.push(
@@ -369,6 +394,7 @@ async function runBuildCheck(input: {
       command: input.commandSpec.command,
       args: retryArgs,
       repoPath: input.repoPath,
+      phase: input.phase,
       verifyBudget: input.verifyBudget
     });
     retryCount += 1;
@@ -408,6 +434,7 @@ async function runBuildCheck(input: {
       command: "mvn",
       args: purgeArgs,
       repoPath: input.repoPath,
+      phase: input.phase,
       verifyBudget: input.verifyBudget
     });
     attempts.push(
@@ -425,6 +452,7 @@ async function runBuildCheck(input: {
       command: input.commandSpec.command,
       args: retryArgs,
       repoPath: input.repoPath,
+      phase: input.phase,
       verifyBudget: input.verifyBudget
     });
     retryCount += 1;
@@ -452,8 +480,8 @@ export class DefaultVerifier implements VerifierPort {
       deadlineMs: startedAtMs + policy.maxVerifyMinutesPerRun * 60_000,
       maxVerifyMinutesPerRun: policy.maxVerifyMinutesPerRun
     };
-    const buildCommand = getBuildCommand(scan.buildSystem);
-    const testCommand = getTestCommand(scan.buildSystem);
+    const buildCommand = getBuildCommand(scan);
+    const testCommand = getTestCommand(scan);
     const prefetchAttempt = await maybeRunMavenPrefetch({
       scan,
       repoPath,
@@ -461,13 +489,21 @@ export class DefaultVerifier implements VerifierPort {
       verifyBudget
     });
 
+    const compileMissingReason =
+      scan.buildSystem === "gradle" &&
+      scan.metadata.gradleProjectType === "jvm" &&
+      !scan.metadata.gradleWrapperPath
+        ? "Gradle wrapper missing; Stage 3 minimal Gradle lane requires wrapper-based builds"
+        : undefined;
+
     const compile =
-      buildCommand && commandAvailable(scan, buildCommand.command as "mvn" | "gradle" | "npm")
+      buildCommand && commandSpecAvailable(scan, buildCommand.command)
         ? await runBuildCheck({
             scan,
             repoPath,
             policy,
             commandSpec: buildCommand,
+            phase: "compile",
             prefaceAttempts: prefetchAttempt ? [prefetchAttempt] : undefined,
             verifyBudget
           })
@@ -475,9 +511,9 @@ export class DefaultVerifier implements VerifierPort {
             buildSystem: scan.buildSystem,
             command: buildCommand?.command,
             args: buildCommand?.args,
-            reason: buildCommand
+            reason: compileMissingReason ?? (buildCommand
               ? `Command '${buildCommand.command}' not available`
-              : `No build command configured for build system '${scan.buildSystem}'`
+              : `No build command configured for build system '${scan.buildSystem}'`)
           });
 
     const tests = !scan.hasTests
@@ -485,21 +521,22 @@ export class DefaultVerifier implements VerifierPort {
           status: "not_run" as const,
           reason: "No tests detected"
         }
-      : testCommand && commandAvailable(scan, testCommand.command as "mvn" | "gradle" | "npm")
+      : testCommand && commandSpecAvailable(scan, testCommand.command)
         ? await runBuildCheck({
             scan,
             repoPath,
             policy,
             commandSpec: testCommand,
+            phase: "tests",
             verifyBudget
           })
         : buildMissingCommandResult({
             buildSystem: scan.buildSystem,
             command: testCommand?.command,
             args: testCommand?.args,
-            reason: testCommand
+            reason: compileMissingReason ?? (testCommand
               ? `Command '${testCommand.command}' not available`
-              : `No test command configured for build system '${scan.buildSystem}'`
+              : `No test command configured for build system '${scan.buildSystem}'`)
           });
 
     const staticChecks = await runBasicStaticChecks(repoPath);
@@ -515,4 +552,9 @@ export class DefaultVerifier implements VerifierPort {
   }
 }
 
-export { MavenDeterministicRemediator } from "./remediator.js";
+export {
+  CompositeDeterministicRemediator,
+  MavenDeterministicRemediator,
+  MavenInfraDeterministicRemediator
+} from "./remediator.js";
+export { MavenCompileDeterministicRemediator } from "./compile-remediator.js";

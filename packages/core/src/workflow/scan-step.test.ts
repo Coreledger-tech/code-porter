@@ -23,11 +23,24 @@ describe("runScanStep", () => {
     expect(result.metadata.selectedManifestPath).toBe("go.mod");
   });
 
-  it("detects gradle roots explicitly", async () => {
-    const result = await runScanStep(resolve(process.cwd(), "fixtures/detection/gradle-root"));
+  it("detects JVM gradle roots with wrapper metadata", async () => {
+    const result = await runScanStep(resolve(process.cwd(), "fixtures/detection/gradle-jvm-root"));
 
     expect(result.buildSystem).toBe("gradle");
     expect(result.metadata.selectedManifestPath).toBe("build.gradle");
+    expect(result.metadata.gradleWrapperPath).toBe("gradlew");
+    expect(result.metadata.gradleProjectType).toBe("jvm");
+  });
+
+  it("detects Android gradle roots with explicit subtype metadata", async () => {
+    const result = await runScanStep(
+      resolve(process.cwd(), "fixtures/detection/gradle-android-root")
+    );
+
+    expect(result.buildSystem).toBe("gradle");
+    expect(result.metadata.selectedManifestPath).toBe("build.gradle");
+    expect(result.metadata.gradleWrapperPath).toBe("gradlew");
+    expect(result.metadata.gradleProjectType).toBe("android");
   });
 
   it("detects python roots explicitly", async () => {

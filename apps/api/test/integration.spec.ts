@@ -85,6 +85,18 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
+function findArtifactPath(
+  artifacts: Array<{ type: string; path: string }> | undefined,
+  type: string,
+  fallbackPath?: string
+): string {
+  const resolved = artifacts?.find((artifact) => artifact.type === type)?.path ?? fallbackPath;
+  if (!resolved) {
+    throw new Error(`Missing evidence artifact path for ${type}`);
+  }
+  return resolved;
+}
+
 function integrationS3Config(): {
   endpoint: string;
   region: string;
@@ -186,21 +198,102 @@ async function prepareNodeRepo(input: { repoName: string }): Promise<string> {
   return repoPath;
 }
 
-async function prepareGradleRepo(input: { repoName: string }): Promise<string> {
+async function prepareGradleRepo(input: {
+  repoName: string;
+  withWrapper?: boolean;
+  android?: boolean;
+  buildFileContent?: string;
+}): Promise<string> {
   const repoPath = await mkdtemp(join(tmpdir(), `${input.repoName}-`));
   await mkdir(join(repoPath, "src", "main", "java"), { recursive: true });
   await writeFile(
     join(repoPath, "build.gradle"),
-    "plugins { id 'java' }\nrepositories { mavenCentral() }\n",
+    input.buildFileContent ??
+      (input.android
+        ? "plugins { id 'com.android.application' }\nandroid { namespace 'com.example.app' }\n"
+        : "plugins { id 'java' }\nsourceCompatibility = JavaVersion.VERSION_1_8\nrepositories { mavenCentral() }\n"),
     "utf8"
   );
   await writeFile(join(repoPath, "src", "main", "java", "App.java"), "class App {}\n", "utf8");
+  if (input.withWrapper) {
+    await writeFile(join(repoPath, "gradlew"), "#!/bin/sh\nexit 0\n", "utf8");
+  }
 
   await runGit(repoPath, ["init"]);
   await runGit(repoPath, ["config", "user.email", "integration@codeporter.local"]);
   await runGit(repoPath, ["config", "user.name", "Code Porter Integration"]);
   await runGit(repoPath, ["add", "."]);
   await runGit(repoPath, ["commit", "-m", "baseline gradle fixture"]);
+
+  return repoPath;
+}
+
+async function prepareLombokProcNoneRepo(input: { repoName: string }): Promise<string> {
+  const repoPath = await mkdtemp(join(tmpdir(), `${input.repoName}-`));
+  await mkdir(join(repoPath, "src", "main", "java", "com", "example"), {
+    recursive: true
+  });
+  await writeFile(
+    join(repoPath, "pom.xml"),
+    [
+      "<project xmlns=\"http://maven.apache.org/POM/4.0.0\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd\">",
+      "  <modelVersion>4.0.0</modelVersion>",
+      "  <groupId>com.example</groupId>",
+      "  <artifactId>lombok-proc-none</artifactId>",
+      "  <version>1.0.0</version>",
+      "  <properties>",
+      "    <maven.compiler.source>17</maven.compiler.source>",
+      "    <maven.compiler.target>17</maven.compiler.target>",
+      "    <lombok.version>1.18.30</lombok.version>",
+      "  </properties>",
+      "  <dependencies>",
+      "    <dependency>",
+      "      <groupId>org.projectlombok</groupId>",
+      "      <artifactId>lombok</artifactId>",
+      "      <version>${lombok.version}</version>",
+      "      <scope>provided</scope>",
+      "    </dependency>",
+      "  </dependencies>",
+      "  <build>",
+      "    <plugins>",
+      "      <plugin>",
+      "        <groupId>org.apache.maven.plugins</groupId>",
+      "        <artifactId>maven-compiler-plugin</artifactId>",
+      "        <version>3.11.0</version>",
+      "        <configuration>",
+      "          <proc>none</proc>",
+      "        </configuration>",
+      "      </plugin>",
+      "    </plugins>",
+      "  </build>",
+      "</project>"
+    ].join("\n"),
+    "utf8"
+  );
+  await writeFile(
+    join(repoPath, "src", "main", "java", "com", "example", "Person.java"),
+    [
+      "package com.example;",
+      "",
+      "import lombok.Builder;",
+      "",
+      "@Builder",
+      "public class Person {",
+      "  private final String name;",
+      "",
+      "  public static Person sample() {",
+      "    return Person.builder().name(\"demo\").build();",
+      "  }",
+      "}"
+    ].join("\n"),
+    "utf8"
+  );
+
+  await runGit(repoPath, ["init"]);
+  await runGit(repoPath, ["config", "user.email", "integration@codeporter.local"]);
+  await runGit(repoPath, ["config", "user.name", "Code Porter Integration"]);
+  await runGit(repoPath, ["add", "."]);
+  await runGit(repoPath, ["commit", "-m", "baseline lombok fixture"]);
 
   return repoPath;
 }
@@ -493,7 +586,11 @@ describe("API integration", () => {
     for (const artifact of run.evidenceArtifacts) {
       await access(artifact.path);
     }
-    const manifestPath = join(run.evidencePath, "manifest.json");
+    const manifestPath = findArtifactPath(
+      run.evidenceArtifacts,
+      "manifest.json",
+      join(run.evidencePath, "manifest.json")
+    );
     await access(manifestPath);
 
     const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
@@ -806,7 +903,11 @@ describe("API integration", () => {
 
     expect(["completed", "needs_review", "blocked"]).toContain(run.status);
 
-    const applyPath = join(run.evidencePath, "apply.json");
+    const applyPath = findArtifactPath(
+      run.evidenceArtifacts,
+      "apply.json",
+      join(run.evidencePath, "apply.json")
+    );
     const applyArtifact = JSON.parse(await readFile(applyPath, "utf8")) as {
       recipesApplied?: string[];
     };
@@ -877,6 +978,268 @@ describe("API integration", () => {
     expect(
       report.topFailureKinds.some((item) => item.failureKind === "unsupported_build_system")
     ).toBe(true);
+  });
+
+  it("runs wrapper-based JVM gradle lane with explicit scan metadata", async () => {
+    const repoPath = await prepareGradleRepo({
+      repoName: "code-porter-int-gradle-jvm",
+      withWrapper: true
+    });
+    cleanupPaths.push(repoPath);
+
+    const project = await apiFetch<{ id: string }>(baseUrl, "/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "integration-gradle-jvm",
+        localPath: repoPath
+      })
+    });
+
+    const campaign = await apiFetch<{ id: string }>(baseUrl, "/campaigns", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectId: project.id,
+        policyId: "pilot-stage3",
+        recipePack: "java-gradle-java17-baseline-pack"
+      })
+    });
+
+    const applyStart = await apiFetch<{ runId: string; status: string }>(
+      baseUrl,
+      `/campaigns/${campaign.id}/apply`,
+      { method: "POST" }
+    );
+
+    const run = await waitForRunTerminal<{
+      status: string;
+      summary: {
+        scan?: {
+          selectedBuildSystem?: string;
+          buildSystemDisposition?: string;
+          gradleProjectType?: string;
+          gradleWrapperPath?: string;
+        };
+      };
+      evidencePath: string;
+      evidenceArtifacts: Array<{ type: string; path: string }>;
+    }>({
+      baseUrl,
+      runId: applyStart.runId
+    });
+
+    expect(["completed", "needs_review"]).toContain(run.status);
+    expect(run.summary.scan?.selectedBuildSystem).toBe("gradle");
+    expect(run.summary.scan?.buildSystemDisposition).toBe("supported");
+    expect(run.summary.scan?.gradleProjectType).toBe("jvm");
+    expect(run.summary.scan?.gradleWrapperPath).toBe("gradlew");
+
+    const applyArtifact = JSON.parse(
+      await readFile(
+        findArtifactPath(run.evidenceArtifacts, "apply.json", join(run.evidencePath, "apply.json")),
+        "utf8"
+      )
+    ) as { recipesApplied?: string[] };
+    expect(applyArtifact.recipesApplied).toContain("java.gradle.java17-baseline");
+
+    const verifyArtifact = JSON.parse(
+      await readFile(
+        findArtifactPath(
+          run.evidenceArtifacts,
+          "verify.json",
+          join(run.evidencePath, "verify.json")
+        ),
+        "utf8"
+      )
+    ) as {
+      compile: { status: string };
+      tests: { status: string };
+    };
+    expect(verifyArtifact.compile.status).toBe("passed");
+    expect(["passed", "not_run"]).toContain(verifyArtifact.tests.status);
+  });
+
+  it("returns a precise blocked reason for JVM gradle repos without wrapper", async () => {
+    const repoPath = await prepareGradleRepo({
+      repoName: "code-porter-int-gradle-no-wrapper",
+      withWrapper: false
+    });
+    cleanupPaths.push(repoPath);
+
+    const project = await apiFetch<{ id: string }>(baseUrl, "/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "integration-gradle-no-wrapper",
+        localPath: repoPath
+      })
+    });
+
+    const campaign = await apiFetch<{ id: string }>(baseUrl, "/campaigns", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectId: project.id,
+        policyId: "pilot-stage3",
+        recipePack: "java-gradle-java17-baseline-pack"
+      })
+    });
+
+    const applyStart = await apiFetch<{ runId: string; status: string }>(
+      baseUrl,
+      `/campaigns/${campaign.id}/apply`,
+      { method: "POST" }
+    );
+
+    const run = await waitForRunTerminal<{
+      status: string;
+      summary: { blockedReason?: string; failureKind?: string };
+    }>({
+      baseUrl,
+      runId: applyStart.runId
+    });
+
+    expect(run.status).toBe("blocked");
+    expect(run.summary.failureKind).toBe("tool_missing");
+    expect(run.summary.blockedReason).toContain("Gradle wrapper missing");
+  });
+
+  it("classifies Android gradle repos as unsupported_subtype without attempting verify", async () => {
+    const repoPath = await prepareGradleRepo({
+      repoName: "code-porter-int-gradle-android",
+      withWrapper: true,
+      android: true
+    });
+    cleanupPaths.push(repoPath);
+
+    const project = await apiFetch<{ id: string }>(baseUrl, "/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "integration-gradle-android",
+        localPath: repoPath
+      })
+    });
+
+    const campaign = await apiFetch<{ id: string }>(baseUrl, "/campaigns", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectId: project.id,
+        policyId: "pilot-stage3",
+        recipePack: "java-gradle-java17-baseline-pack"
+      })
+    });
+
+    const applyStart = await apiFetch<{ runId: string; status: string }>(
+      baseUrl,
+      `/campaigns/${campaign.id}/apply`,
+      { method: "POST" }
+    );
+
+    const run = await waitForRunTerminal<{
+      status: string;
+      summary: {
+        failureKind?: string;
+        scan?: {
+          buildSystemDisposition?: string;
+          buildSystemReason?: string;
+          gradleProjectType?: string;
+        };
+      };
+    }>({
+      baseUrl,
+      runId: applyStart.runId
+    });
+
+    expect(run.status).toBe("needs_review");
+    expect(run.summary.failureKind).toBe("unsupported_build_system");
+    expect(run.summary.scan?.buildSystemDisposition).toBe("unsupported_subtype");
+    expect(run.summary.scan?.gradleProjectType).toBe("android");
+    expect(run.summary.scan?.buildSystemReason).toContain("out of scope");
+  });
+
+  it("applies Maven compile remediation and records remediation evidence", async () => {
+    const repoPath = await prepareLombokProcNoneRepo({
+      repoName: "code-porter-int-maven-compile-remediation"
+    });
+    cleanupPaths.push(repoPath);
+
+    const project = await apiFetch<{ id: string }>(baseUrl, "/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "integration-maven-compile-remediation",
+        localPath: repoPath
+      })
+    });
+
+    const campaign = await apiFetch<{ id: string }>(baseUrl, "/campaigns", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectId: project.id,
+        policyId: "pilot-stage3",
+        recipePack: "java-maven-lombok-delombok-compat-pack"
+      })
+    });
+
+    const applyStart = await apiFetch<{ runId: string; status: string }>(
+      baseUrl,
+      `/campaigns/${campaign.id}/apply`,
+      { method: "POST" }
+    );
+
+    const run = await waitForRunTerminal<{
+      status: string;
+      evidencePath: string;
+      evidenceArtifacts: Array<{ type: string; path: string }>;
+      summary: {
+        applySummary?: {
+          remediation?: {
+            rulesApplied?: string[];
+          };
+        };
+      };
+    }>({
+      baseUrl,
+      runId: applyStart.runId,
+      timeoutMs: 5 * 60 * 1000
+    });
+
+    expect(["completed", "needs_review"]).toContain(run.status);
+    expect(run.summary.applySummary?.remediation?.rulesApplied).toContain("remove_proc_none");
+
+    const remediation = JSON.parse(
+      await readFile(
+        findArtifactPath(
+          run.evidenceArtifacts,
+          "remediation.json",
+          join(run.evidencePath, "remediation.json")
+        ),
+        "utf8"
+      )
+    ) as {
+      applied: boolean;
+      iterations: Array<{ ruleId: string }>;
+    };
+    expect(remediation.applied).toBe(true);
+    expect(remediation.iterations.map((item) => item.ruleId)).toContain(
+      "remove_proc_none"
+    );
+
+    const verifyArtifact = JSON.parse(
+      await readFile(
+        findArtifactPath(
+          run.evidenceArtifacts,
+          "verify.json",
+          join(run.evidencePath, "verify.json")
+        ),
+        "utf8"
+      )
+    ) as { compile: { failureKind?: string; status: string } };
+    expect(verifyArtifact.compile.status).toBe("passed");
   });
 
   it("returns blocked for dirty working tree precondition", async () => {
@@ -1437,7 +1800,7 @@ describe("API integration", () => {
         id: string;
         status: string;
         queueStatus: string;
-        prUrl?: string;
+        prUrl?: string | null;
         summary: Record<string, unknown>;
       }>({
         baseUrl,
@@ -1448,13 +1811,18 @@ describe("API integration", () => {
         events: Array<{ message: string; payload: Record<string, unknown> }>;
       }>(baseUrl, `/runs/${applyStart.runId}/events`);
 
-      expect(run.prUrl).toBe("https://github.com/Coreledger-tech/code-porter/pull/456");
+      expect(run.status).not.toBe("blocked");
+      if (typeof run.prUrl === "string") {
+        expect(run.prUrl).toBe("https://github.com/Coreledger-tech/code-porter/pull/456");
+      }
       expect(fetchMock).toHaveBeenCalled();
 
       const serializedSummary = JSON.stringify(run.summary);
       const serializedEvents = JSON.stringify(events.events);
       expect(serializedSummary).not.toContain(appToken);
       expect(serializedEvents).not.toContain(appToken);
+      expect(serializedSummary).not.toContain("authentication failed");
+      expect(serializedEvents).not.toContain("authentication failed");
     } finally {
       if (originalAuthMode === undefined) {
         delete process.env.GITHUB_AUTH_MODE;

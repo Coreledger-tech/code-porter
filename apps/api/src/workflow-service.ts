@@ -32,9 +32,12 @@ import { MavenLombokPluginJava17BumpRecipe } from "@code-porter/recipes/src/reci
 import { MavenLombokDelombokPreparePackageRecipe } from "@code-porter/recipes/src/recipes/maven-lombok-delombok-prepare-package.js";
 import { MavenSurefireSafeRecipe } from "@code-porter/recipes/src/recipes/maven-surefire-safe.js";
 import {
+  CompositeDeterministicRemediator,
   DefaultVerifier,
+  MavenCompileDeterministicRemediator,
   MavenDeterministicRemediator
 } from "@code-porter/verifier/src/index.js";
+import { GradleJava17BaselineRecipe } from "@code-porter/recipes/src/recipes/gradle-java17-baseline.js";
 import {
   createGitHubAuthProvider,
   GitHubPRProvider,
@@ -218,11 +221,16 @@ function buildJavaMavenLombokDelombokCompatRecipes(): Recipe[] {
   ];
 }
 
+function buildJavaGradleJava17BaselineRecipes(): Recipe[] {
+  return [new GradleJava17BaselineRecipe()];
+}
+
 const RECIPE_PACK_FACTORIES: Record<string, () => Recipe[]> = {
   "java-maven-core": buildJavaMavenCoreRecipes,
   "java-maven-plugin-modernize": buildJavaMavenPluginModernizeRecipes,
   "java-maven-lombok-java17-pack": buildJavaMavenLombokJava17Recipes,
-  "java-maven-lombok-delombok-compat-pack": buildJavaMavenLombokDelombokCompatRecipes
+  "java-maven-lombok-delombok-compat-pack": buildJavaMavenLombokDelombokCompatRecipes,
+  "java-gradle-java17-baseline-pack": buildJavaGradleJava17BaselineRecipes
 };
 
 export function listSupportedRecipePacks(): string[] {
@@ -835,11 +843,13 @@ export async function executeRunById(runId: string, workerId: string): Promise<{
   const workspaceRoot = resolve(process.cwd(), process.env.WORKSPACE_ROOT ?? "./workspaces");
   const workspaceManager = new WorkspaceManager(workspaceRoot);
 
-  const useDeterministicRemediator =
-    process.env.ENABLE_DETERMINISTIC_REMEDIATOR === "true";
-  const remediator = useDeterministicRemediator
-    ? new MavenDeterministicRemediator()
-    : undefined;
+  const remediator =
+    process.env.ENABLE_DETERMINISTIC_REMEDIATOR === "false"
+      ? undefined
+      : new CompositeDeterministicRemediator([
+          new MavenDeterministicRemediator(),
+          new MavenCompileDeterministicRemediator()
+        ]);
 
   const evidenceWriter = new FileEvidenceWriter(evidenceRoot);
   const baseEvidenceStore = new ZipEvidenceStore(

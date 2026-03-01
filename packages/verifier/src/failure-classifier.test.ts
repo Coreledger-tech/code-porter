@@ -13,7 +13,8 @@ describe("failure classifier", () => {
       },
       {
         buildSystem: "maven",
-        command: "mvn"
+        command: "mvn",
+        phase: "compile"
       }
     );
 
@@ -29,7 +30,8 @@ describe("failure classifier", () => {
       },
       {
         buildSystem: "maven",
-        command: "mvn"
+        command: "mvn",
+        phase: "compile"
       }
     );
 
@@ -44,14 +46,15 @@ describe("failure classifier", () => {
       },
       {
         buildSystem: "maven",
-        command: "mvn"
+        command: "mvn",
+        phase: "compile"
       }
     );
 
     expect(kind).toBe("repo_unreachable");
   });
 
-  it("classifies remaining build failures as code failures", () => {
+  it("classifies remaining build failures as compile failures", () => {
     const kind = classifyVerifyFailure(
       {
         status: "failed",
@@ -59,11 +62,28 @@ describe("failure classifier", () => {
       },
       {
         buildSystem: "maven",
-        command: "mvn"
+        command: "mvn",
+        phase: "compile"
       }
     );
 
-    expect(kind).toBe("code_failure");
+    expect(kind).toBe("code_compile_failure");
+  });
+
+  it("classifies test failures separately", () => {
+    const kind = classifyVerifyFailure(
+      {
+        status: "failed",
+        output: "[ERROR] Tests run: 1, Failures: 1"
+      },
+      {
+        buildSystem: "maven",
+        command: "mvn",
+        phase: "tests"
+      }
+    );
+
+    expect(kind).toBe("code_test_failure");
   });
 
   it("classifies lombok IllegalAccessError as java17 plugin incompatibility", () => {
@@ -75,7 +95,8 @@ describe("failure classifier", () => {
       },
       {
         buildSystem: "maven",
-        command: "mvn"
+        command: "mvn",
+        phase: "compile"
       }
     );
 
@@ -91,7 +112,8 @@ describe("failure classifier", () => {
       },
       {
         buildSystem: "maven",
-        command: "mvn"
+        command: "mvn",
+        phase: "compile"
       }
     );
 
@@ -106,11 +128,12 @@ describe("failure classifier", () => {
       },
       {
         buildSystem: "maven",
-        command: "mvn"
+        command: "mvn",
+        phase: "compile"
       }
     );
 
-    expect(kind).toBe("code_failure");
+    expect(kind).toBe("code_compile_failure");
   });
 
   it("detects cached resolution signal", () => {

@@ -1,32 +1,40 @@
-# Code Porter v1.0.0-rc.1 Release Candidate Guide
+# Code Porter Release Candidate Guide
 
 ## RC Checklist
 1. Move local non-source artifacts out of the repo root before release checks (for example the local `Code porter*.pdf` files) so `git status --short` is clean.
 2. Confirm you are on `main`.
-3. Run release helper (local tag only): `npm run release:rc`.
+3. Run release helper with an explicit rc tag (local tag only): `npm run release:rc -- --tag <tag>`.
 4. Push branch and tag explicitly:
 - `git push origin main`
-- `git push origin v1.0.0-rc.1`
+- `git push origin <tag>`
 5. Verify remote tag exists:
-- `git ls-remote --tags origin "v1.0.0-rc.1"`
+- `git ls-remote --tags origin "<tag>"`
 6. Verify GitHub Actions workflow success:
-- `docker-publish` triggered for `v1.0.0-rc.1`
-- image published at `ghcr.io/coreledger-tech/code-porter:v1.0.0-rc.1`
+- `docker-publish` triggered for `<tag>`
+- image published at `ghcr.io/coreledger-tech/code-porter:<tag>`
 7. Verify fresh-clone runtime boot and health checks.
 
 ## Exact RC Commands
 ```bash
-npm run release:rc
+npm run release:rc -- --tag v1.0.0-rc.2
 git push origin main
-git push origin v1.0.0-rc.1
-git ls-remote --tags origin "v1.0.0-rc.1"
+git push origin v1.0.0-rc.2
+git ls-remote --tags origin "v1.0.0-rc.2"
+npm run verify:ghcr -- --tag v1.0.0-rc.2
 ```
 
 ## GHCR Verification
-1. In GitHub Actions, confirm successful run for `.github/workflows/docker-publish.yml` on tag `v1.0.0-rc.1`.
-2. Confirm the published container tag:
+1. GHCR visibility is package-level, not tag-level.
+2. Preferred path is a public package at `ghcr.io/coreledger-tech/code-porter`.
+3. In GitHub Actions, confirm successful run for `.github/workflows/docker-publish.yml` on the rc tag you just pushed.
+4. Confirm the published container tag:
 ```bash
-docker pull ghcr.io/coreledger-tech/code-porter:v1.0.0-rc.1
+docker pull ghcr.io/coreledger-tech/code-porter:v1.0.0-rc.2
+```
+5. If the package is private, use:
+```bash
+echo "$GITHUB_TOKEN" | docker login ghcr.io -u <github-user> --password-stdin
+docker pull ghcr.io/coreledger-tech/code-porter:v1.0.0-rc.2
 ```
 
 ## Fresh Clone Compose Smoke Test
@@ -51,6 +59,6 @@ Expected:
 2. Stop worker and PR poller services.
 3. Roll back deployment to the previous stable image tag.
 4. If RC tag must be withdrawn:
-- local delete: `git tag -d v1.0.0-rc.1`
-- remote delete: `git push origin :refs/tags/v1.0.0-rc.1`
+- local delete: `git tag -d <tag>`
+- remote delete: `git push origin :refs/tags/<tag>`
 5. Resume campaigns only after rollback validation.

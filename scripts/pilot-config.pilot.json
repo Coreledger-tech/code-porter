@@ -1,7 +1,7 @@
 {
   "apiBaseUrl": "http://localhost:3000",
-  "policyId": "pilot-conservative",
-  "recipePack": "java-maven-lombok-java17-pack",
+  "policyId": "pilot-stage3",
+  "recipePack": "java-maven-lombok-delombok-compat-pack",
   "targetSelector": "main",
   "window": "7d",
   "pollIntervalMs": 2000,
@@ -12,31 +12,41 @@
       "name": "Java-Web-Crawler",
       "owner": "Coreledger-tech",
       "repo": "Java-Web-Crawler",
-      "defaultBranch": "main"
+      "defaultBranch": "main",
+      "policyId": "pilot-stage3",
+      "recipePack": "java-maven-lombok-delombok-compat-pack"
     },
     {
       "name": "Axum-matching-engine",
       "owner": "Coreledger-tech",
       "repo": "Axum-matching-engine",
-      "defaultBranch": "main"
+      "defaultBranch": "main",
+      "policyId": "pilot-stage3",
+      "recipePack": "java-maven-lombok-delombok-compat-pack"
     },
     {
       "name": "authelia-TOTP",
       "owner": "Coreledger-tech",
       "repo": "authelia-TOTP",
-      "defaultBranch": "master"
+      "defaultBranch": "master",
+      "policyId": "pilot-stage3",
+      "recipePack": "java-maven-lombok-delombok-compat-pack"
     },
     {
       "name": "Exception-handling-reconciliation",
       "owner": "Coreledger-tech",
       "repo": "Exception-handling-reconciliation",
-      "defaultBranch": "main"
+      "defaultBranch": "main",
+      "policyId": "pilot-stage3",
+      "recipePack": "java-maven-lombok-delombok-compat-pack"
     },
     {
       "name": "android-ESP-32-bluetooth-arduino",
       "owner": "Coreledger-tech",
       "repo": "android-ESP-32-bluetooth-arduino",
-      "defaultBranch": "master"
+      "defaultBranch": "master",
+      "policyId": "pilot-stage3",
+      "recipePack": "java-gradle-java17-baseline-pack"
     }
   ]
 }

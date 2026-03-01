@@ -54,6 +54,7 @@ export function classifyVerifyFailure(
   context: {
     command?: string;
     buildSystem: "maven" | "gradle" | "node" | "python" | "go" | "unknown";
+    phase: "compile" | "tests" | "static";
   }
 ): VerifyFailureKind | undefined {
   if (check.status === "passed") {
@@ -87,7 +88,7 @@ export function classifyVerifyFailure(
       context.buildSystem === "gradle" ||
       context.buildSystem === "node")
   ) {
-    return "code_failure";
+    return context.phase === "tests" ? "code_test_failure" : "code_compile_failure";
   }
 
   return "unknown";
