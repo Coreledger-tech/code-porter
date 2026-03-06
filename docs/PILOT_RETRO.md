@@ -218,78 +218,97 @@
   - `npm run test:integration`
 - GHCR verification result:
   - `npm run verify:ghcr -- --tag v1.0.0-rc.2` still returns `unauthorized`
-  - Conclusion: repository visibility is public, but the GHCR package is not yet publicly pullable from this environment
+  - Conclusion: the repository can be public while `ghcr.io/coreledger-tech/code-porter` remains private or inaccessible to anonymous pull from this environment
   - Release docs now record both the preferred public-pull path and the private `docker login ghcr.io` fallback
 
 ### Axum Targeted Rerun
 - Fresh Stage 3 runtime used:
-  - API: `http://127.0.0.1:3013`
+  - API: `http://127.0.0.1:3014`
+  - Java: `Temurin 17.0.18`
   - policy: `pilot-stage3`
   - recipe pack: `java-maven-lombok-delombok-compat-pack`
 - Targeted apply run:
-  - runId: `1e1882f5-23d0-4c8c-a7d1-d1e88da3fb19`
-  - PR: `https://github.com/Coreledger-tech/Axum-matching-engine/pull/7`
+  - runId: `77662191-27bd-47b9-b3a8-29022b0407d0`
+  - PR: `https://github.com/Coreledger-tech/Axum-matching-engine/pull/8`
   - final status: `needs_review`
-  - failureKind: `code_compile_failure`
-- Deterministic remediation result:
-  - `ensure_maven_compiler_plugin_for_lombok` applied
-  - remediation patch stayed within policy budget: `1` file, `15` lines
-  - evidence artifacts now include:
-    - `remediation.json`
-    - `artifacts/remediation-1.patch`
-- Post-remediation verifier result:
-  - compile still fails
-  - current failure is now:
-    - `org.apache.maven.plugins:maven-compiler-plugin:3.11.0:compile`
-    - `java.lang.NoSuchFieldError`
-    - `JCTree$JCImport ... qualid`
-- This is materially different from the pre-Stage-3 failure:
-  - the compile remediator now triggers correctly
-  - the remaining blocker is the host verifier toolchain, not a skipped remediation
+  - failureKind: `code_test_failure`
+- Verifier result:
+  - compile passes on Java 17
+  - tests fail in `testCompile`
+  - current failures are ordinary project test-source issues:
+    - `package jdk.nashorn.internal.ir.annotations does not exist`
+    - `cannot find symbol class Ignore`
+- Remediation result:
+  - compile remediator did not run because compile already passed
+  - `remediation.json` records `applied=false` and `reason=not_applicable`
+- Gate decision:
+  - Stage 3 Axum gate passed
+  - the old toolchain/plugin crash path is gone
+  - remaining failures are normal project-level test compatibility issues
 
-### Toolchain Finding
-- The pilot host currently has:
-  - JDK `23.0.2`
-  - several JDK `8` installs
-  - no JDK `17`
-- That makes the current verifier environment unsuitable for a Java 17 migration lane that relies on Lombok annotation processing.
-- Stage 3 Axum gate is therefore not satisfied yet:
-  - compile/tests do not pass
-  - the full 5-repo rerun was not executed because the Axum gate failed for environmental reasons
-
-### Gradle Lane Validation
-- Targeted Android Gradle run:
-  - repo: `Coreledger-tech/android-ESP-32-bluetooth-arduino`
-  - runId: `d85eeaa9-1eee-4629-b5a6-61c00333896d`
-  - final status: `needs_review`
-  - failureKind: `unsupported_build_system`
-  - buildSystemDisposition: `unsupported_subtype`
-  - gradleWrapperPath: `gradlew`
-  - gradleProjectType: `unknown`
-- Result:
-  - no PR opened
-  - the repo is no longer opaque; the Stage 3 lane returns a precise unsupported subtype outcome instead of a generic unknown
-  - this specific repo still needs better subtype inference because the Android markers live below the selected root build file
+### Full Cohort Rerun
+- Cohort artifact: `/Users/kelvinmusodza/Downloads/Code porter/evidence/pilot/2026-03-02T00-20-02-233Z/pilot-summary.json`
+- Runtime:
+  - API: `http://127.0.0.1:3014`
+  - Java: `Temurin 17.0.18`
+  - policy: `pilot-stage3`
+- Cohort outcomes:
+  - `completed=1`
+  - `needs_review=9`
+  - `blocked=0`
+  - `retries=0`
+  - `budget guardrails=0`
+  - `open PRs=1`
+- Repo results:
+  - `Java-Web-Crawler`
+    - apply status: `completed`
+    - build system: `maven`
+    - selected build root: nested Maven lane already normalized; no new PR was needed in this rerun
+  - `Axum-matching-engine`
+    - apply status: `needs_review`
+    - failureKind: `code_test_failure`
+    - PR: `https://github.com/Coreledger-tech/Axum-matching-engine/pull/9`
+  - `authelia-TOTP`
+    - apply status: `needs_review`
+    - failureKind: `unsupported_build_system`
+    - selected build system: `go`
+    - disposition: `excluded_by_policy`
+  - `Exception-handling-reconciliation`
+    - apply status: `needs_review`
+    - failureKind: `unsupported_build_system`
+    - selected build system: `unknown`
+    - disposition: `no_supported_manifest`
+  - `android-ESP-32-bluetooth-arduino`
+    - apply status: `needs_review`
+    - failureKind: `unsupported_build_system`
+    - selected build system: `gradle`
+    - disposition: `unsupported_subtype`
+    - gradleProjectType: `unknown`
+    - result: no PR, but the lane now returns an explicit unsupported subtype rather than an opaque unknown
 
 ### Stage 3 Comparison vs Stage 2
 | metric | Stage 2 | Stage 3 |
 | --- | --- | --- |
 | GHCR public pull | not verified | still unauthorized |
-| Axum failure kind | `code_compile_failure` after plugin pack | `code_compile_failure` after compile remediator |
-| Axum remediation applied | no | yes, `ensure_maven_compiler_plugin_for_lombok` |
-| Axum PR candidate | `#4` | `#7` |
+| Axum failure kind | `code_compile_failure` | `code_test_failure` |
+| Axum compile status | failed | passed |
+| Axum remediation applied | no | no; compile remediator not applicable once compile passed |
+| Axum PR candidate | `#4` | `#9` |
 | Gradle precise subtype result | not exercised live | yes |
-| full cohort rerun | deferred | deferred |
+| full cohort rerun | deferred | executed |
+| completed apply runs | `0` | `1` |
 
 ### Top Remaining Blockers After Stage 3
-1. JDK 17 is not installed on the pilot host.
-   - The verifier is running on JDK 23, which is not a valid stand-in for Java 17 annotation-processing compatibility.
-2. GHCR package visibility is still not public in practice.
+1. GHCR package visibility is still not public in practice.
    - The scripted public pull path remains unauthorized.
+2. Axum now fails in test sources rather than build tooling.
+   - The blocking errors are project-level Java 17 test compatibility issues (`jdk.nashorn.internal.ir.annotations`, `Ignore`), not lane/toolchain failures.
 3. Real-world Gradle subtype inference needs one more pass.
    - The Android repo is correctly held out of the JVM-only lane, but it is classified as `unknown` subtype rather than `android`.
+4. The aggregate `7d` report still carries historical `unknown` rows.
+   - The Stage 3 cohort artifact is clean, but `/reports/pilot?window=7d` still mixes in older runs from before the classification changes.
 
 ### Next Operator Actions
-1. Install JDK 17 and rerun the API/worker/poller with `JAVA_HOME` pinned to that JDK before retrying Axum.
-2. Make `ghcr.io/coreledger-tech/code-porter` public, or provide a PAT with `read:packages` and verify the fallback pull path.
-3. After the Axum gate passes on JDK 17, rerun the same 5-repo pilot cohort with `pilot-stage3`.
+1. Fix GHCR pull verification by making `ghcr.io/coreledger-tech/code-porter` public or by using `docker login ghcr.io` with a PAT that has `read:packages`.
+2. Review `Axum-matching-engine` PR `#9` as a merge candidate for compile-side modernization; treat the remaining test failures as the next deterministic/test lane target.
+3. Keep Android subtype refinement out of the critical path unless the next pilot specifically needs Android support.
