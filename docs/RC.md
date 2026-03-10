@@ -31,6 +31,10 @@ npm run verify:ghcr -- --tag v1.0.0-rc.2
 ```bash
 docker pull ghcr.io/coreledger-tech/code-porter:v1.0.0-rc.2
 ```
+If your host is Apple Silicon and the tag is single-arch, use:
+```bash
+docker pull --platform linux/amd64 ghcr.io/coreledger-tech/code-porter:v1.0.0-rc.2
+```
 5. If the package is private, use:
 ```bash
 echo "$GITHUB_TOKEN" | docker login ghcr.io -u <github-user> --password-stdin

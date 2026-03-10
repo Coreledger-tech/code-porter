@@ -18,6 +18,11 @@
 ```bash
 docker pull ghcr.io/coreledger-tech/code-porter:v1.0.0-rc.2
 ```
+If pull fails on Apple Silicon with `no matching manifest for linux/arm64/v8`, use:
+```bash
+docker pull --platform linux/amd64 ghcr.io/coreledger-tech/code-porter:v1.0.0-rc.2
+```
+New tags published after the multi-arch workflow update include both `linux/amd64` and `linux/arm64`.
 5. If the package is private, use:
 ```bash
 echo "$GITHUB_TOKEN" | docker login ghcr.io -u <github-user> --password-stdin

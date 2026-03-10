@@ -217,9 +217,11 @@
   - `npm test`
   - `npm run test:integration`
 - GHCR verification result:
-  - `npm run verify:ghcr -- --tag v1.0.0-rc.2` still returns `unauthorized`
-  - Conclusion: the repository can be public while `ghcr.io/coreledger-tech/code-porter` remains private or inaccessible to anonymous pull from this environment
-  - Release docs now record both the preferred public-pull path and the private `docker login ghcr.io` fallback
+  - private package login succeeds with PAT (`read:packages`)
+  - `npm run verify:ghcr -- --tag v1.0.0-rc.2` now succeeds
+  - `rc.2` is single-arch and requires fallback pull on Apple Silicon:
+    - `docker pull --platform linux/amd64 ghcr.io/coreledger-tech/code-porter:v1.0.0-rc.2`
+  - publishing workflow has been updated to multi-arch for future tags (`linux/amd64`, `linux/arm64`)
 
 ### Axum Targeted Rerun
 - Fresh Stage 3 runtime used:
@@ -289,7 +291,7 @@
 ### Stage 3 Comparison vs Stage 2
 | metric | Stage 2 | Stage 3 |
 | --- | --- | --- |
-| GHCR public pull | not verified | still unauthorized |
+| GHCR verification | not verified | verified via authenticated pull + arm fallback |
 | Axum failure kind | `code_compile_failure` | `code_test_failure` |
 | Axum compile status | failed | passed |
 | Axum remediation applied | no | no; compile remediator not applicable once compile passed |
@@ -299,16 +301,14 @@
 | completed apply runs | `0` | `1` |
 
 ### Top Remaining Blockers After Stage 3
-1. GHCR package visibility is still not public in practice.
-   - The scripted public pull path remains unauthorized.
-2. Axum now fails in test sources rather than build tooling.
+1. Axum now fails in test sources rather than build tooling.
    - The blocking errors are project-level Java 17 test compatibility issues (`jdk.nashorn.internal.ir.annotations`, `Ignore`), not lane/toolchain failures.
-3. Real-world Gradle subtype inference needs one more pass.
+2. Real-world Gradle subtype inference needs one more pass.
    - The Android repo is correctly held out of the JVM-only lane, but it is classified as `unknown` subtype rather than `android`.
-4. The aggregate `7d` report still carries historical `unknown` rows.
+3. The aggregate `7d` report still carries historical `unknown` rows.
    - The Stage 3 cohort artifact is clean, but `/reports/pilot?window=7d` still mixes in older runs from before the classification changes.
 
 ### Next Operator Actions
-1. Fix GHCR pull verification by making `ghcr.io/coreledger-tech/code-porter` public or by using `docker login ghcr.io` with a PAT that has `read:packages`.
-2. Review `Axum-matching-engine` PR `#9` as a merge candidate for compile-side modernization; treat the remaining test failures as the next deterministic/test lane target.
-3. Keep Android subtype refinement out of the critical path unless the next pilot specifically needs Android support.
+1. Review `Axum-matching-engine` PR `#9` as a merge candidate for compile-side modernization; treat the remaining test failures as the next deterministic/test lane target.
+2. Keep Android subtype refinement out of the critical path unless the next pilot specifically needs Android support.
+3. For `rc.3+`, verify GHCR native arm pulls after the multi-arch publish workflow runs on a new tag.
