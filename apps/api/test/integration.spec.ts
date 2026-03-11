@@ -354,6 +354,28 @@ async function sleep(ms: number): Promise<void> {
   });
 }
 
+async function truncateIntegrationTablesWithRetry(
+  queryDb: <T = unknown>(text: string, params?: unknown[]) => Promise<{ rows: T[] }>
+): Promise<void> {
+  const maxAttempts = 5;
+  const statement =
+    "truncate table evidence_artifacts, runs, campaigns, projects restart identity cascade";
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await queryDb(statement);
+      return;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const isDeadlock = /deadlock detected/i.test(message);
+      if (!isDeadlock || attempt === maxAttempts) {
+        throw error;
+      }
+      await sleep(100 * attempt);
+    }
+  }
+}
+
 async function waitForRunTerminal<T extends {
   status: string;
   queueStatus?: string;
@@ -501,7 +523,7 @@ describe("API integration", () => {
   });
 
   beforeEach(async () => {
-    await queryDb("truncate table evidence_artifacts, runs, campaigns, projects restart identity cascade");
+    await truncateIntegrationTablesWithRetry(queryDb);
     process.env.EVIDENCE_STORE_MODE = "local";
     process.env.EVIDENCE_KEEP_LOCAL_DISK = "true";
   });
