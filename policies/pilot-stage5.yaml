@@ -1,0 +1,46 @@
+maxChangeLines: 120
+maxFilesChanged: 6
+requireTestsIfPresent: true
+maxInflightRunsPerProject: 1
+maxInflightRunsGlobal: 2
+maxVerifyMinutesPerRun: 15
+maxVerifyRetries: 1
+maxEvidenceZipBytes: 41943040
+defaultRecipePack: java-maven-test-compat-v2-pack
+allowedBuildSystems:
+  - maven
+  - gradle
+verifyFailureMode: warn
+verify:
+  blockingFailureKinds:
+    - code_compile_failure
+    - code_test_failure
+    - code_failure
+    - java17_plugin_incompat
+  nonBlockingFailureKinds:
+    - tool_missing
+    - artifact_resolution
+    - repo_unreachable
+    - budget_exceeded
+  retryOnCachedResolution: true
+  maven:
+    forceUpdate: true
+    prefetchPlugins: true
+    purgeLocalCache: false
+gradle:
+  allowAndroidBaselineApply: true
+remediation:
+  mavenCompile:
+    enabled: true
+    maxIterations: 2
+    maxFilesChangedPerIteration: 1
+    maxLinesChangedPerIteration: 25
+    maxFilesChangedTotal: 2
+    maxLinesChangedTotal: 40
+    allowedFixes:
+      - ensure_maven_compiler_plugin_for_lombok
+      - ensure_lombok_annotation_processor_path
+      - remove_proc_none
+confidenceThresholds:
+  pass: 80
+  needsReview: 60

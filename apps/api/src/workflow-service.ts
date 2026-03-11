@@ -44,6 +44,7 @@ import {
 } from "@code-porter/verifier/src/index.js";
 import { GradleJava17BaselineRecipe } from "@code-porter/recipes/src/recipes/gradle-java17-baseline.js";
 import { GradleWrapperJava17MinRecipe } from "@code-porter/recipes/src/recipes/gradle-wrapper-java17-min.js";
+import { GradleGuardedPropertiesBaselineRecipe } from "@code-porter/recipes/src/recipes/gradle-guarded-properties-baseline.js";
 import {
   createGitHubAuthProvider,
   GitHubPRProvider,
@@ -260,6 +261,10 @@ function buildJavaGradleJava17BaselineRecipes(): Recipe[] {
   return [new GradleWrapperJava17MinRecipe(), new GradleJava17BaselineRecipe()];
 }
 
+function buildJavaGradleGuardedBaselineRecipes(): Recipe[] {
+  return [new GradleWrapperJava17MinRecipe(), new GradleGuardedPropertiesBaselineRecipe()];
+}
+
 const RECIPE_PACK_FACTORIES: Record<string, () => Recipe[]> = {
   "java-maven-core": buildJavaMavenCoreRecipes,
   "java-maven-plugin-modernize": buildJavaMavenPluginModernizeRecipes,
@@ -267,7 +272,8 @@ const RECIPE_PACK_FACTORIES: Record<string, () => Recipe[]> = {
   "java-maven-lombok-delombok-compat-pack": buildJavaMavenLombokDelombokCompatRecipes,
   "java-maven-test-compat-pack": buildJavaMavenTestCompatRecipes,
   "java-maven-test-compat-v2-pack": buildJavaMavenTestCompatV2Recipes,
-  "java-gradle-java17-baseline-pack": buildJavaGradleJava17BaselineRecipes
+  "java-gradle-java17-baseline-pack": buildJavaGradleJava17BaselineRecipes,
+  "java-gradle-guarded-baseline-pack": buildJavaGradleGuardedBaselineRecipes
 };
 
 export function listSupportedRecipePacks(): string[] {

@@ -1,7 +1,7 @@
 {
   "apiBaseUrl": "http://localhost:3000",
-  "policyId": "pilot-stage4",
-  "recipePack": "java-maven-test-compat-pack",
+  "policyId": "pilot-stage5",
+  "recipePack": "java-maven-test-compat-v2-pack",
   "targetSelector": "main",
   "window": "7d",
   "pollIntervalMs": 2000,
@@ -13,40 +13,40 @@
       "owner": "Coreledger-tech",
       "repo": "Java-Web-Crawler",
       "defaultBranch": "main",
-      "policyId": "pilot-stage4",
-      "recipePack": "java-maven-test-compat-pack"
+      "policyId": "pilot-stage5",
+      "recipePack": "java-maven-test-compat-v2-pack"
     },
     {
       "name": "Axum-matching-engine",
       "owner": "Coreledger-tech",
       "repo": "Axum-matching-engine",
       "defaultBranch": "main",
-      "policyId": "pilot-stage4",
-      "recipePack": "java-maven-test-compat-pack"
+      "policyId": "pilot-stage5",
+      "recipePack": "java-maven-test-compat-v2-pack"
     },
     {
       "name": "authelia-TOTP",
       "owner": "Coreledger-tech",
       "repo": "authelia-TOTP",
       "defaultBranch": "master",
-      "policyId": "pilot-stage4",
-      "recipePack": "java-maven-test-compat-pack"
+      "policyId": "pilot-stage5",
+      "recipePack": "java-maven-test-compat-v2-pack"
     },
     {
       "name": "Exception-handling-reconciliation",
       "owner": "Coreledger-tech",
       "repo": "Exception-handling-reconciliation",
       "defaultBranch": "main",
-      "policyId": "pilot-stage4",
-      "recipePack": "java-maven-test-compat-pack"
+      "policyId": "pilot-stage5",
+      "recipePack": "java-maven-test-compat-v2-pack"
     },
     {
       "name": "android-ESP-32-bluetooth-arduino",
       "owner": "Coreledger-tech",
       "repo": "android-ESP-32-bluetooth-arduino",
       "defaultBranch": "master",
-      "policyId": "pilot-stage4",
-      "recipePack": "java-gradle-java17-baseline-pack"
+      "policyId": "pilot-stage5",
+      "recipePack": "java-gradle-guarded-baseline-pack"
     }
   ]
 }

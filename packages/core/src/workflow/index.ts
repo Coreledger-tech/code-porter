@@ -140,21 +140,23 @@ function verifyForPlanMode(
   };
 }
 
+const GUARDED_ANDROID_BASELINE_REASON =
+  "Guarded Android baseline apply mode skips Gradle task execution; run full Android CI outside Code Porter before merge";
+
 function verifyForGuardedAndroidMode(
   buildSystem: VerifySummary["buildSystem"],
   hasTests: boolean
 ): VerifySummary {
-  const reason = "Gradle Android full verify is out of scope for guarded baseline mode";
   return {
     buildSystem,
     hasTests,
     compile: {
       status: "not_run",
-      reason
+      reason: GUARDED_ANDROID_BASELINE_REASON
     },
     tests: {
       status: "not_run",
-      reason
+      reason: GUARDED_ANDROID_BASELINE_REASON
     },
     staticChecks: {
       status: "passed",
@@ -594,7 +596,7 @@ export async function executeWorkflow(input: {
         id: "gradle_android_guarded_verify",
         stage: "verify",
         status: "warn",
-        reason: "Gradle Android baseline mode skips full verify; run remains needs_review for manual Android CI validation",
+        reason: GUARDED_ANDROID_BASELINE_REASON,
         blocking: false
       });
     } else {
@@ -673,6 +675,7 @@ export async function executeWorkflow(input: {
     classification: confidenceScore?.classification ?? "blocked",
     ...(failureKind ? { failureKind } : {}),
     blockedReason,
+    ...(guardedAndroidBaselineMode ? { guardedBaselineReason: GUARDED_ANDROID_BASELINE_REASON } : {}),
     workspace: workspaceSummary,
     scan: {
       selectedBuildSystem: scanResult.buildSystem,

@@ -10,6 +10,7 @@ const CANDIDATE_FILES = [
   "settings.gradle",
   "settings.gradle.kts",
   "gradle/wrapper/gradle-wrapper.properties",
+  "gradle.properties",
   "package.json",
   "pyproject.toml",
   "go.mod"
