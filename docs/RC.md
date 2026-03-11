@@ -13,6 +13,10 @@
 - `docker-publish` triggered for `<tag>`
 - image published at `ghcr.io/coreledger-tech/code-porter:<tag>`
 7. Verify fresh-clone runtime boot and health checks.
+8. Integration isolation preflight (mandatory before `release:rc`):
+- ensure host worker and pr-poller are stopped, or run integration in compose-only mode.
+- stop command:
+  - `/bin/zsh -lc 'pkill -f "apps/api/src/worker.ts" || true; pkill -f "apps/api/src/pr-poller.ts" || true'`
 
 ## Exact RC Commands
 ```bash
@@ -51,6 +55,17 @@ curl -s http://localhost:3000/health | jq
 curl -s http://localhost:3000/metrics | head -n 20
 docker compose down -v
 ```
+
+## Integration Test Isolation
+`npm run release:rc` now fails fast if host worker/poller processes are running, because they can consume queue jobs and make `npm run test:integration` flaky.
+
+Before release:
+```bash
+/bin/zsh -lc 'pkill -f "apps/api/src/worker.ts" || true; pkill -f "apps/api/src/pr-poller.ts" || true'
+```
+
+Alternative:
+- keep host runtime processes stopped and run integration in compose-only mode.
 
 Expected:
 1. `health` returns `db.ok=true`.

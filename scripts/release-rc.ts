@@ -72,6 +72,67 @@ function assertTagMissing(tag: string): void {
   }
 }
 
+export function detectRuntimeProcessConflicts(
+  exec: typeof spawnSync = spawnSync
+): string[] {
+  const checks = [
+    {
+      name: "worker",
+      pattern: "apps/api/src/worker.ts"
+    },
+    {
+      name: "pr-poller",
+      pattern: "apps/api/src/pr-poller.ts"
+    }
+  ];
+
+  const conflicts: string[] = [];
+  for (const check of checks) {
+    const result = exec("pgrep", ["-fal", check.pattern], {
+      encoding: "utf8",
+      stdio: "pipe"
+    });
+
+    if (result.status === 1) {
+      continue;
+    }
+
+    if (result.status !== 0) {
+      const output = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
+      throw new Error(
+        `Failed to inspect running processes with pgrep for '${check.name}'${output ? `\n${output}` : ""}`
+      );
+    }
+
+    const entries = (result.stdout ?? "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (entries.length > 0) {
+      conflicts.push(`${check.name}: ${entries.join("; ")}`);
+    }
+  }
+
+  return conflicts;
+}
+
+function assertNoRuntimeProcessConflicts(): void {
+  const conflicts = detectRuntimeProcessConflicts();
+  if (conflicts.length === 0) {
+    return;
+  }
+
+  throw new Error(
+    [
+      "Detected running Code Porter runtime processes that can interfere with integration tests:",
+      ...conflicts.map((line) => `- ${line}`),
+      "Stop host runtime processes and re-run release:rc.",
+      "Suggested stop command:",
+      "/bin/zsh -lc 'pkill -f \"apps/api/src/worker.ts\" || true; pkill -f \"apps/api/src/pr-poller.ts\" || true'"
+    ].join("\n")
+  );
+}
+
 export function main(argv = process.argv.slice(2)): void {
   const { tag } = parseReleaseRcArgs(argv);
 
@@ -85,6 +146,9 @@ export function main(argv = process.argv.slice(2)): void {
 
   console.log("[release:rc] running test suite...");
   runChecked("npm", ["test"]);
+
+  console.log("[release:rc] checking integration test isolation...");
+  assertNoRuntimeProcessConflicts();
 
   console.log("[release:rc] running integration suite...");
   runChecked("npm", ["run", "test:integration"]);
