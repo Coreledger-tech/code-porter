@@ -23,13 +23,15 @@ describe("YamlPolicyEngine", () => {
       "code_compile_failure",
       "code_test_failure",
       "code_failure",
-      "java17_plugin_incompat"
+      "java17_plugin_incompat",
+      "java17_module_access_test_failure"
     ]);
     expect(policy.verify.nonBlockingFailureKinds).toContain("artifact_resolution");
     expect(policy.verify.retryOnCachedResolution).toBe(true);
     expect(policy.verify.maven.forceUpdate).toBe(true);
     expect(policy.gradle?.allowAndroidBaselineApply).toBe(false);
     expect(policy.remediation?.mavenCompile?.enabled).toBe(false);
+    expect(policy.remediation?.mavenTestRuntime?.enabled).toBe(false);
     expect(policy.confidenceThresholds.pass).toBe(70);
   });
 
@@ -142,7 +144,8 @@ describe("YamlPolicyEngine", () => {
       "code_compile_failure",
       "code_test_failure",
       "code_failure",
-      "java17_plugin_incompat"
+      "java17_plugin_incompat",
+      "java17_module_access_test_failure"
     ]);
     expect(policy.verify.nonBlockingFailureKinds).toContain("unknown");
     expect(policy.maxVerifyMinutesPerRun).toBe(20);
@@ -195,5 +198,16 @@ describe("YamlPolicyEngine", () => {
           decision.reason.includes("baseline apply mode is enabled")
       )
     ).toBe(true);
+  });
+
+  it("parses stage6 test-runtime remediation policy controls", async () => {
+    const engine = new YamlPolicyEngine();
+    const policy = await engine.load(resolve(process.cwd(), "policies/pilot-stage6.yaml"));
+
+    expect(policy.verify.blockingFailureKinds).toContain("java17_module_access_test_failure");
+    expect(policy.remediation?.mavenTestRuntime?.enabled).toBe(true);
+    expect(policy.remediation?.mavenTestRuntime?.allowedFixes).toEqual([
+      "ensure_add_opens_sun_nio_ch"
+    ]);
   });
 });

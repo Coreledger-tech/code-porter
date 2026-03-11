@@ -136,6 +136,40 @@ describe("failure classifier", () => {
     expect(kind).toBe("code_compile_failure");
   });
 
+  it("classifies Java 17 module-access test runtime failures", () => {
+    const kind = classifyVerifyFailure(
+      {
+        status: "failed",
+        output:
+          "java.lang.IllegalAccessError: class org.apache.lucene.store.MMapDirectory cannot access class sun.nio.ch.FileChannelImpl because module java.base does not export sun.nio.ch"
+      },
+      {
+        buildSystem: "maven",
+        command: "mvn",
+        phase: "tests"
+      }
+    );
+
+    expect(kind).toBe("java17_module_access_test_failure");
+  });
+
+  it("does not classify generic IllegalAccessError test failures as module access", () => {
+    const kind = classifyVerifyFailure(
+      {
+        status: "failed",
+        output:
+          "java.lang.IllegalAccessError: class com.example.A cannot access class com.example.internal.B"
+      },
+      {
+        buildSystem: "maven",
+        command: "mvn",
+        phase: "tests"
+      }
+    );
+
+    expect(kind).toBe("code_test_failure");
+  });
+
   it("detects cached resolution signal", () => {
     expect(
       isCachedResolutionFailure({

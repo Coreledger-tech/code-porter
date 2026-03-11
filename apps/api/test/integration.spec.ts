@@ -311,6 +311,56 @@ async function prepareLombokProcNoneRepo(input: { repoName: string }): Promise<s
   return repoPath;
 }
 
+async function prepareMavenTestRuntimeRepo(input: { repoName: string }): Promise<string> {
+  const repoPath = await mkdtemp(join(tmpdir(), `${input.repoName}-`));
+  await mkdir(join(repoPath, "src", "test", "java", "com", "example"), {
+    recursive: true
+  });
+  await writeFile(
+    join(repoPath, "pom.xml"),
+    [
+      "<project xmlns=\"http://maven.apache.org/POM/4.0.0\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd\">",
+      "  <modelVersion>4.0.0</modelVersion>",
+      "  <groupId>com.example</groupId>",
+      "  <artifactId>runtime-test-repro</artifactId>",
+      "  <version>1.0.0</version>",
+      "  <build>",
+      "    <plugins>",
+      "      <plugin>",
+      "        <groupId>org.apache.maven.plugins</groupId>",
+      "        <artifactId>maven-surefire-plugin</artifactId>",
+      "        <version>3.2.5</version>",
+      "      </plugin>",
+      "      <plugin>",
+      "        <groupId>org.apache.maven.plugins</groupId>",
+      "        <artifactId>maven-failsafe-plugin</artifactId>",
+      "        <version>3.2.5</version>",
+      "      </plugin>",
+      "    </plugins>",
+      "  </build>",
+      "</project>"
+    ].join("\n"),
+    "utf8"
+  );
+  await writeFile(
+    join(repoPath, "src", "test", "java", "com", "example", "RuntimeTest.java"),
+    [
+      "package com.example;",
+      "",
+      "public class RuntimeTest {}"
+    ].join("\n"),
+    "utf8"
+  );
+
+  await runGit(repoPath, ["init"]);
+  await runGit(repoPath, ["config", "user.email", "integration@codeporter.local"]);
+  await runGit(repoPath, ["config", "user.name", "Code Porter Integration"]);
+  await runGit(repoPath, ["add", "."]);
+  await runGit(repoPath, ["commit", "-m", "baseline runtime fixture"]);
+
+  return repoPath;
+}
+
 async function prepareNestedMavenRepo(input: { repoName: string }): Promise<string> {
   const repoPath = await mkdtemp(join(tmpdir(), `${input.repoName}-`));
   const modulePath = join(repoPath, "my-app");
@@ -1443,10 +1493,10 @@ describe("API integration", () => {
     });
 
     expect(run.status).toBe("needs_review");
-    expect(run.summary.failureKind).toBe("unsupported_build_system");
-    expect(run.summary.scan?.buildSystemDisposition).toBe("unsupported_subtype");
+    expect(run.summary.failureKind).toBeUndefined();
+    expect(run.summary.scan?.buildSystemDisposition).toBe("supported");
     expect(run.summary.scan?.gradleProjectType).toBe("android");
-    expect(run.summary.scan?.buildSystemReason).toContain("out of scope");
+    expect(run.summary.scan?.buildSystemReason).toContain("baseline apply mode is enabled");
 
     const applyArtifact = JSON.parse(
       await readFile(
@@ -1550,10 +1600,12 @@ describe("API integration", () => {
         status: string;
         prUrl?: string | null;
         summary: {
+          failureKind?: string;
           guardedBaselineReason?: string;
           scan?: {
             selectedBuildSystem?: string;
             gradleProjectType?: string;
+            buildSystemDisposition?: string;
           };
         };
         evidencePath: string;
@@ -1565,8 +1617,10 @@ describe("API integration", () => {
 
       expect(run.status).toBe("needs_review");
       expect(run.prUrl).toBe("https://github.com/Coreledger-tech/code-porter/pull/987");
+      expect(run.summary.failureKind).toBeUndefined();
       expect(run.summary.scan?.selectedBuildSystem).toBe("gradle");
       expect(run.summary.scan?.gradleProjectType).toBe("android");
+      expect(run.summary.scan?.buildSystemDisposition).toBe("supported");
       expect(run.summary.guardedBaselineReason).toContain("skips Gradle task execution");
 
       const applyArtifact = JSON.parse(
@@ -1689,6 +1743,327 @@ describe("API integration", () => {
       )
     ) as { compile: { failureKind?: string; status: string } };
     expect(verifyArtifact.compile.status).toBe("passed");
+  });
+
+  it("applies test-runtime module-access remediation only for the Java 17 FileChannelImpl signature", async () => {
+    const repoPath = await prepareMavenTestRuntimeRepo({
+      repoName: "code-porter-int-maven-test-runtime-remediation"
+    });
+    cleanupPaths.push(repoPath);
+
+    const fakeBin = await mkdtemp(join(tmpdir(), "code-porter-fake-mvn-runtime-"));
+    cleanupPaths.push(fakeBin);
+    const mvnScript = join(fakeBin, "mvn");
+    await writeFile(
+      mvnScript,
+      [
+        "#!/bin/sh",
+        "set -eu",
+        "ARGS=\"$*\"",
+        "if echo \"$ARGS\" | grep -q \"dependency:resolve-plugins\"; then",
+        "  exit 0",
+        "fi",
+        "if echo \"$ARGS\" | grep -q -- \"-DskipTests compile\"; then",
+        "  echo \"compile ok\"",
+        "  exit 0",
+        "fi",
+        "if echo \"$ARGS\" | grep -q \" test\"; then",
+        "  if grep -q -- \"--add-opens=java.base/sun.nio.ch=ALL-UNNAMED\" pom.xml; then",
+        "    echo \"tests ok\"",
+        "    exit 0",
+        "  fi",
+        "  echo \"java.lang.IllegalAccessError: class org.apache.lucene.store.MMapDirectory cannot access class sun.nio.ch.FileChannelImpl because module java.base does not export sun.nio.ch\"",
+        "  exit 1",
+        "fi",
+        "exit 0"
+      ].join("\n"),
+      "utf8"
+    );
+    await execFileAsync("chmod", ["+x", mvnScript]);
+
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${fakeBin}:${originalPath ?? ""}`;
+
+    try {
+      const project = await apiFetch<{ id: string }>(baseUrl, "/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "integration-maven-test-runtime-remediation",
+          localPath: repoPath
+        })
+      });
+
+      const campaign = await apiFetch<{ id: string }>(baseUrl, "/campaigns", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: project.id,
+          policyId: "pilot-stage6",
+          recipePack: "java-maven-test-compat-v2-pack"
+        })
+      });
+
+      const applyStart = await apiFetch<{ runId: string; status: string }>(
+        baseUrl,
+        `/campaigns/${campaign.id}/apply`,
+        { method: "POST" }
+      );
+
+      const run = await waitForRunTerminal<{
+        status: string;
+        evidencePath: string;
+        evidenceArtifacts: Array<{ type: string; path: string }>;
+        summary: {
+          applySummary?: {
+            remediation?: {
+              rulesApplied?: string[];
+            };
+          };
+          failureKind?: string;
+        };
+      }>({
+        baseUrl,
+        runId: applyStart.runId,
+        timeoutMs: 2 * 60 * 1000
+      });
+
+      expect(["completed", "needs_review"]).toContain(run.status);
+      expect(run.summary.applySummary?.remediation?.rulesApplied).toContain(
+        "ensure_add_opens_sun_nio_ch"
+      );
+      expect(run.summary.failureKind).not.toBe("java17_module_access_test_failure");
+
+      const verifyArtifact = JSON.parse(
+        await readFile(
+          findArtifactPath(
+            run.evidenceArtifacts,
+            "verify.json",
+            join(run.evidencePath, "verify.json")
+          ),
+          "utf8"
+        )
+      ) as { tests: { status: string; failureKind?: string } };
+      expect(verifyArtifact.tests.status).toBe("passed");
+
+      const remediationArtifact = JSON.parse(
+        await readFile(
+          findArtifactPath(
+            run.evidenceArtifacts,
+            "remediation-test-runtime.json",
+            join(run.evidencePath, "remediation-test-runtime.json")
+          ),
+          "utf8"
+        )
+      ) as { applied: boolean; iterations?: Array<{ ruleId?: string }> };
+      expect(remediationArtifact.applied).toBe(true);
+      expect(remediationArtifact.iterations?.[0]?.ruleId).toBe("ensure_add_opens_sun_nio_ch");
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
+
+  it("does not apply test-runtime module-access remediation for non-signature test failures", async () => {
+    const repoPath = await prepareMavenTestRuntimeRepo({
+      repoName: "code-porter-int-maven-test-runtime-no-signature"
+    });
+    cleanupPaths.push(repoPath);
+
+    const fakeBin = await mkdtemp(join(tmpdir(), "code-porter-fake-mvn-runtime-generic-"));
+    cleanupPaths.push(fakeBin);
+    const mvnScript = join(fakeBin, "mvn");
+    await writeFile(
+      mvnScript,
+      [
+        "#!/bin/sh",
+        "set -eu",
+        "ARGS=\"$*\"",
+        "if echo \"$ARGS\" | grep -q \"dependency:resolve-plugins\"; then",
+        "  exit 0",
+        "fi",
+        "if echo \"$ARGS\" | grep -q -- \"-DskipTests compile\"; then",
+        "  exit 0",
+        "fi",
+        "if echo \"$ARGS\" | grep -q \" test\"; then",
+        "  echo \"java.lang.AssertionError: expected true\"",
+        "  exit 1",
+        "fi",
+        "exit 0"
+      ].join("\n"),
+      "utf8"
+    );
+    await execFileAsync("chmod", ["+x", mvnScript]);
+
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${fakeBin}:${originalPath ?? ""}`;
+
+    try {
+      const project = await apiFetch<{ id: string }>(baseUrl, "/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "integration-maven-test-runtime-no-signature",
+          localPath: repoPath
+        })
+      });
+
+      const campaign = await apiFetch<{ id: string }>(baseUrl, "/campaigns", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: project.id,
+          policyId: "pilot-stage6",
+          recipePack: "java-maven-test-compat-v2-pack"
+        })
+      });
+
+      const applyStart = await apiFetch<{ runId: string; status: string }>(
+        baseUrl,
+        `/campaigns/${campaign.id}/apply`,
+        { method: "POST" }
+      );
+
+      const run = await waitForRunTerminal<{
+        status: string;
+        evidencePath: string;
+        evidenceArtifacts: Array<{ type: string; path: string }>;
+        summary: {
+          applySummary?: {
+            remediation?: {
+              rulesApplied?: string[];
+            };
+          };
+          failureKind?: string;
+        };
+      }>({
+        baseUrl,
+        runId: applyStart.runId,
+        timeoutMs: 2 * 60 * 1000
+      });
+
+      expect(run.status).toBe("needs_review");
+      expect(run.summary.failureKind).toBe("code_test_failure");
+      expect(run.summary.applySummary?.remediation?.rulesApplied ?? []).not.toContain(
+        "ensure_add_opens_sun_nio_ch"
+      );
+      expect(run.evidenceArtifacts.some((artifact) => artifact.type === "remediation-test-runtime.json")).toBe(
+        false
+      );
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
+
+  it("writes retrieval context evidence on verify failures when semantic retrieval is enabled", async () => {
+    const repoPath = await prepareMavenTestRuntimeRepo({
+      repoName: "code-porter-int-semantic-retrieval"
+    });
+    cleanupPaths.push(repoPath);
+
+    const fakeBin = await mkdtemp(join(tmpdir(), "code-porter-fake-mvn-retrieval-"));
+    cleanupPaths.push(fakeBin);
+    const mvnScript = join(fakeBin, "mvn");
+    await writeFile(
+      mvnScript,
+      [
+        "#!/bin/sh",
+        "set -eu",
+        "ARGS=\"$*\"",
+        "if echo \"$ARGS\" | grep -q \"dependency:resolve-plugins\"; then",
+        "  exit 0",
+        "fi",
+        "if echo \"$ARGS\" | grep -q -- \"-DskipTests compile\"; then",
+        "  exit 0",
+        "fi",
+        "if echo \"$ARGS\" | grep -q \" test\"; then",
+        "  echo \"java.lang.AssertionError: retrieval failure trigger\"",
+        "  exit 1",
+        "fi",
+        "exit 0"
+      ].join("\n"),
+      "utf8"
+    );
+    await execFileAsync("chmod", ["+x", mvnScript]);
+
+    const originalPath = process.env.PATH;
+    const originalEnabled = process.env.SEMANTIC_RETRIEVAL_ENABLED;
+    const originalProvider = process.env.SEMANTIC_RETRIEVAL_PROVIDER;
+    const originalTopK = process.env.SEMANTIC_RETRIEVAL_TOP_K;
+    process.env.PATH = `${fakeBin}:${originalPath ?? ""}`;
+    process.env.SEMANTIC_RETRIEVAL_ENABLED = "true";
+    process.env.SEMANTIC_RETRIEVAL_PROVIDER = "claude_context";
+    process.env.SEMANTIC_RETRIEVAL_TOP_K = "3";
+
+    try {
+      const project = await apiFetch<{ id: string }>(baseUrl, "/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "integration-semantic-retrieval",
+          localPath: repoPath
+        })
+      });
+
+      const campaign = await apiFetch<{ id: string }>(baseUrl, "/campaigns", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: project.id,
+          policyId: "pilot-stage6",
+          recipePack: "java-maven-test-compat-v2-pack"
+        })
+      });
+
+      const applyStart = await apiFetch<{ runId: string; status: string }>(
+        baseUrl,
+        `/campaigns/${campaign.id}/apply`,
+        { method: "POST" }
+      );
+
+      const run = await waitForRunTerminal<{
+        status: string;
+        evidencePath: string;
+        evidenceArtifacts: Array<{ type: string; path: string }>;
+      }>({
+        baseUrl,
+        runId: applyStart.runId,
+        timeoutMs: 2 * 60 * 1000
+      });
+
+      expect(run.status).toBe("needs_review");
+      const retrievalArtifactPath = findArtifactPath(
+        run.evidenceArtifacts,
+        "context/retrieval.json",
+        join(run.evidencePath, "context", "retrieval.json")
+      );
+      const retrievalArtifact = JSON.parse(await readFile(retrievalArtifactPath, "utf8")) as {
+        enabled?: boolean;
+        error?: string;
+        hits?: unknown[];
+      };
+      expect(retrievalArtifact.enabled).toBe(true);
+      expect(
+        typeof retrievalArtifact.error === "string" ||
+          Array.isArray(retrievalArtifact.hits)
+      ).toBe(true);
+    } finally {
+      process.env.PATH = originalPath;
+      if (originalEnabled === undefined) {
+        delete process.env.SEMANTIC_RETRIEVAL_ENABLED;
+      } else {
+        process.env.SEMANTIC_RETRIEVAL_ENABLED = originalEnabled;
+      }
+      if (originalProvider === undefined) {
+        delete process.env.SEMANTIC_RETRIEVAL_PROVIDER;
+      } else {
+        process.env.SEMANTIC_RETRIEVAL_PROVIDER = originalProvider;
+      }
+      if (originalTopK === undefined) {
+        delete process.env.SEMANTIC_RETRIEVAL_TOP_K;
+      } else {
+        process.env.SEMANTIC_RETRIEVAL_TOP_K = originalTopK;
+      }
+    }
   });
 
   it("returns blocked for dirty working tree precondition", async () => {
