@@ -1,7 +1,6 @@
 services:
   postgres:
     image: postgres:16
-    container_name: code-porter-postgres
     ports:
       - "${POSTGRES_HOST_PORT:-5433}:5432"
     environment:
@@ -18,7 +17,6 @@ services:
 
   minio:
     image: minio/minio:latest
-    container_name: code-porter-minio
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${S3_ACCESS_KEY_ID:-minioadmin}
@@ -31,7 +29,6 @@ services:
 
   minio-init:
     image: minio/mc:latest
-    container_name: code-porter-minio-init
     depends_on:
       minio:
         condition: service_started
@@ -45,14 +42,13 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: code-porter-migrate
     depends_on:
       postgres:
         condition: service_healthy
     restart: "no"
     environment:
       PORT: ${PORT:-3000}
-      DATABASE_URL: ${DATABASE_URL:-postgresql://code_porter:code_porter@postgres:5432/code_porter}
+      DATABASE_URL: ${DATABASE_URL_COMPOSE:-postgresql://code_porter:code_porter@postgres:5432/code_porter}
       POLICY_DEFAULT_PATH: ${POLICY_DEFAULT_PATH:-./policies/default.yaml}
     command: ["npm", "run", "db:migrate"]
 
@@ -60,7 +56,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: code-porter-api
     depends_on:
       postgres:
         condition: service_healthy
@@ -70,7 +65,7 @@ services:
         condition: service_completed_successfully
     environment:
       PORT: ${PORT:-3000}
-      DATABASE_URL: ${DATABASE_URL:-postgresql://code_porter:code_porter@postgres:5432/code_porter}
+      DATABASE_URL: ${DATABASE_URL_COMPOSE:-postgresql://code_porter:code_porter@postgres:5432/code_porter}
       POLICY_DEFAULT_PATH: ${POLICY_DEFAULT_PATH:-./policies/default.yaml}
       RUN_WORKER_POLL_MS: ${RUN_WORKER_POLL_MS:-1000}
       RUN_WORKER_CONCURRENCY: ${RUN_WORKER_CONCURRENCY:-1}
@@ -117,7 +112,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: code-porter-worker
     depends_on:
       postgres:
         condition: service_healthy
@@ -126,7 +120,7 @@ services:
       migrate:
         condition: service_completed_successfully
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql://code_porter:code_porter@postgres:5432/code_porter}
+      DATABASE_URL: ${DATABASE_URL_COMPOSE:-postgresql://code_porter:code_porter@postgres:5432/code_porter}
       POLICY_DEFAULT_PATH: ${POLICY_DEFAULT_PATH:-./policies/default.yaml}
       RUN_WORKER_POLL_MS: ${RUN_WORKER_POLL_MS:-1000}
       RUN_WORKER_CONCURRENCY: ${RUN_WORKER_CONCURRENCY:-1}
@@ -170,7 +164,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: code-porter-pr-poller
     depends_on:
       postgres:
         condition: service_healthy
@@ -179,7 +172,7 @@ services:
       migrate:
         condition: service_completed_successfully
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql://code_porter:code_porter@postgres:5432/code_porter}
+      DATABASE_URL: ${DATABASE_URL_COMPOSE:-postgresql://code_porter:code_porter@postgres:5432/code_porter}
       POLICY_DEFAULT_PATH: ${POLICY_DEFAULT_PATH:-./policies/default.yaml}
       PR_POLL_INTERVAL_MS: ${PR_POLL_INTERVAL_MS:-60000}
       PR_POLL_BATCH_SIZE: ${PR_POLL_BATCH_SIZE:-100}
