@@ -51,7 +51,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
         "java-maven-core",
         "java-maven-plugin-modernize",
         "java-maven-lombok-java17-pack",
-        "java-maven-lombok-delombok-compat-pack"
+        "java-maven-lombok-delombok-compat-pack",
+        "java-maven-test-compat-pack",
+        "java-gradle-java17-baseline-pack"
       ]),
       defaultRecipePackIdMock: vi.fn(() => "java-maven-plugin-modernize"),
       RunThrottleError,
@@ -219,7 +221,9 @@ describe("campaignsRouter", () => {
         "java-maven-core",
         "java-maven-plugin-modernize",
         "java-maven-lombok-java17-pack",
-        "java-maven-lombok-delombok-compat-pack"
+        "java-maven-lombok-delombok-compat-pack",
+        "java-maven-test-compat-pack",
+        "java-gradle-java17-baseline-pack"
       ],
       defaultRecipePack: "java-maven-plugin-modernize"
     });
