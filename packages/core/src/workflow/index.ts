@@ -23,6 +23,7 @@ import type {
   EvidenceStorePort,
   EvidenceWriterPort,
   KnowledgePublisherPort,
+  SemanticRetrievalProvider,
   RemediationAction,
   RecipeEnginePort,
   VerifierPort,
@@ -69,13 +70,18 @@ function annotateScanForPolicy(scan: ScanResult, policy: PolicyConfig): ScanResu
     scan.metadata.gradleProjectType !== "jvm"
   ) {
     const subtype = scan.metadata.gradleProjectType;
+    const guardedAndroidAllowed =
+      subtype === "android" && policy.gradle?.allowAndroidBaselineApply === true;
     return {
       ...scan,
       metadata: {
         ...scan.metadata,
-        buildSystemDisposition: "unsupported_subtype" as BuildSystemDisposition,
-        buildSystemReason:
-          subtype === "android"
+        buildSystemDisposition: (guardedAndroidAllowed
+          ? "supported"
+          : "unsupported_subtype") as BuildSystemDisposition,
+        buildSystemReason: guardedAndroidAllowed
+          ? "Gradle Android baseline apply mode is enabled; deterministic guarded baseline will run while full Gradle task execution remains out of scope"
+          : subtype === "android"
             ? "Gradle Android projects are out of scope for the Stage 3 JVM-only lane"
             : "Gradle project type could not be classified as JVM for the Stage 3 minimal lane"
       }
@@ -256,6 +262,12 @@ function collectBudgetSignals(summary: VerifySummary): Array<{
     }));
 }
 
+function hasFailedVerifyChecks(summary: VerifySummary): boolean {
+  return [summary.compile, summary.tests, summary.staticChecks].some(
+    (check) => check.status === "failed"
+  );
+}
+
 function buildBlockedScoreArtifact(blockedReason: string): {
   score: null;
   classification: "blocked";
@@ -290,6 +302,7 @@ export async function executeWorkflow(input: {
   evidenceWriter: EvidenceWriterPort;
   evidenceStore: EvidenceStorePort;
   knowledgePublisher?: KnowledgePublisherPort;
+  semanticRetrievalProvider?: SemanticRetrievalProvider;
   remediator?: DeterministicRemediator;
   onStepEvent?: (event: {
     eventType: "step_start" | "step_end" | "warning" | "error";
@@ -589,6 +602,36 @@ export async function executeWorkflow(input: {
   }
 
   await input.evidenceWriter.write(runContext, "verify.json", verifySummary);
+
+  if (
+    input.mode === "apply" &&
+    input.semanticRetrievalProvider?.enabled &&
+    hasFailedVerifyChecks(verifySummary)
+  ) {
+    const topKRaw = Number(process.env.SEMANTIC_RETRIEVAL_TOP_K ?? "5");
+    const topK = Number.isFinite(topKRaw) && topKRaw > 0 ? Math.floor(topKRaw) : 5;
+    try {
+      const retrieval = await input.semanticRetrievalProvider.retrieve({
+        repoPath: buildRootPath,
+        scan: scanResult,
+        verify: verifySummary,
+        topK,
+        filePaths: Object.keys(files)
+      });
+      await input.evidenceWriter.write(runContext, "context/retrieval.json", {
+        enabled: true,
+        retrievedAt: nowIso(),
+        ...retrieval
+      });
+    } catch (error) {
+      await input.evidenceWriter.write(runContext, "context/retrieval.json", {
+        enabled: true,
+        provider: process.env.SEMANTIC_RETRIEVAL_PROVIDER ?? "claude_context",
+        retrievedAt: nowIso(),
+        error: error instanceof Error ? error.message : String(error ?? "unknown retrieval error")
+      });
+    }
+  }
 
   if (input.mode === "apply") {
     if (guardedAndroidBaselineMode) {

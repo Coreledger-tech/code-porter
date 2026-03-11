@@ -233,12 +233,35 @@ async function detectGradleMetadata(
       )
     : null;
 
-  const candidates = [
-    join(buildRoot, "build.gradle"),
-    join(buildRoot, "build.gradle.kts"),
-    join(buildRoot, "settings.gradle"),
-    join(buildRoot, "settings.gradle.kts")
-  ];
+  async function collectGradleFiles(currentPath: string, depth: number): Promise<string[]> {
+    const entries = await readdir(currentPath, { withFileTypes: true });
+    const files: string[] = [];
+    const gradleFileNames = new Set([
+      "build.gradle",
+      "build.gradle.kts",
+      "settings.gradle",
+      "settings.gradle.kts"
+    ]);
+
+    for (const entry of entries) {
+      const fullPath = join(currentPath, entry.name);
+      if (entry.isFile() && gradleFileNames.has(entry.name)) {
+        files.push(fullPath);
+        continue;
+      }
+      if (
+        entry.isDirectory() &&
+        depth < MAX_SCAN_DEPTH &&
+        !EXCLUDED_DIRECTORIES.has(entry.name)
+      ) {
+        files.push(...(await collectGradleFiles(fullPath, depth + 1)));
+      }
+    }
+
+    return files;
+  }
+
+  const candidates = await collectGradleFiles(buildRoot, 0);
 
   let combined = "";
   for (const candidate of candidates) {
@@ -256,7 +279,7 @@ async function detectGradleMetadata(
   }
 
   if (
-    /com\.android\.(application|library|test|dynamic-feature)|id\("com\.android\.(application|library|test|dynamic-feature)"\)|apply\s+plugin:\s*['"]com\.android\.(application|library|test|dynamic-feature)['"]|android\s*\{/i.test(
+    /com\.android\.(application|library|test|dynamic-feature)|id\("com\.android\.(application|library|test|dynamic-feature)"\)|apply\s+plugin:\s*['"]com\.android\.(application|library|test|dynamic-feature)['"]|classpath\s*['"]com\.android\.tools\.build:gradle[^'"]*['"]|android\s*\{/i.test(
       combined
     )
   ) {
