@@ -476,6 +476,16 @@ export async function runMigrations(): Promise<void> {
     ["pilot-stage5", "Pilot Stage 5 Policy", "./policies/pilot-stage5.yaml"]
   );
 
+  await dbPool.query(
+    `insert into policies (id, name, config_path)
+     values ($1, $2, $3)
+     on conflict (id)
+     do update set
+       name = excluded.name,
+       config_path = excluded.config_path`,
+    ["pilot-stage6", "Pilot Stage 6 Policy", "./policies/pilot-stage6.yaml"]
+  );
+
   // eslint-disable-next-line no-console
   console.log("Migrations complete");
 }

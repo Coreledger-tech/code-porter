@@ -21,7 +21,10 @@ import {
   isS3Mode,
   ZipEvidenceStore
 } from "@code-porter/evidence/src/index.js";
-import { StubKnowledgePublisher } from "@code-porter/knowledge/src/publisher.js";
+import {
+  createSemanticRetrievalProviderFromEnv,
+  StubKnowledgePublisher
+} from "@code-porter/knowledge/src/index.js";
 import { DefaultRecipeEngine } from "@code-porter/recipes/src/engine.js";
 import type { Recipe } from "@code-porter/recipes/src/types.js";
 import { MavenCompilerPluginBumpRecipe } from "@code-porter/recipes/src/recipes/maven-compiler-plugin-bump.js";
@@ -40,7 +43,8 @@ import {
   CompositeDeterministicRemediator,
   DefaultVerifier,
   MavenCompileDeterministicRemediator,
-  MavenDeterministicRemediator
+  MavenDeterministicRemediator,
+  MavenTestRuntimeDeterministicRemediator
 } from "@code-porter/verifier/src/index.js";
 import { GradleJava17BaselineRecipe } from "@code-porter/recipes/src/recipes/gradle-java17-baseline.js";
 import { GradleWrapperJava17MinRecipe } from "@code-porter/recipes/src/recipes/gradle-wrapper-java17-min.js";
@@ -891,10 +895,12 @@ export async function executeRunById(runId: string, workerId: string): Promise<{
       ? undefined
       : new CompositeDeterministicRemediator([
           new MavenDeterministicRemediator(),
-          new MavenCompileDeterministicRemediator()
+          new MavenCompileDeterministicRemediator(),
+          new MavenTestRuntimeDeterministicRemediator()
         ]);
 
   const evidenceWriter = new FileEvidenceWriter(evidenceRoot);
+  const semanticRetrievalProvider = createSemanticRetrievalProviderFromEnv();
   const baseEvidenceStore = new ZipEvidenceStore(
     new LocalEvidenceStore(evidenceWriter),
     evidenceExportRoot
@@ -996,6 +1002,7 @@ export async function executeRunById(runId: string, workerId: string): Promise<{
       evidenceWriter,
       evidenceStore,
       knowledgePublisher: new StubKnowledgePublisher(),
+      semanticRetrievalProvider,
       remediator,
       onStepEvent: async (event) => {
         const cancelled = await getRunCancellationState(run.id);

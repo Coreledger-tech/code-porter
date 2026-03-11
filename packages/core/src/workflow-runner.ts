@@ -173,6 +173,31 @@ export interface KnowledgePublisherPort {
   }): Promise<{ published: boolean; location?: string; reason?: string }>;
 }
 
+export interface SemanticRetrievalHit {
+  filePath: string;
+  score: number;
+  reason?: string;
+}
+
+export interface SemanticRetrievalResult {
+  provider: string;
+  topK: number;
+  query: string;
+  hits: SemanticRetrievalHit[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface SemanticRetrievalProvider {
+  readonly enabled: boolean;
+  retrieve(input: {
+    repoPath: string;
+    scan: ScanResult;
+    verify: VerifySummary;
+    topK: number;
+    filePaths: string[];
+  }): Promise<SemanticRetrievalResult>;
+}
+
 export interface RunRequest {
   project: Project;
   campaign: Campaign;
