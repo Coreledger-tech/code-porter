@@ -319,6 +319,14 @@
 - Policy ID: `pilot-stage4`
 - Maven pack: `java-maven-test-compat-pack`
 
+## Stage 6 Expected Deltas
+This section is intentionally pre-execution and contains expected outcomes only.
+
+1. Maven module-access test runtime failures should move from generic `code_test_failure` to `java17_module_access_test_failure` when the strict signature is present.
+2. Deterministic test-runtime remediation should add minimal surefire/failsafe `--add-opens=java.base/sun.nio.ch=ALL-UNNAMED` configuration only when required by evidence.
+3. Android Gradle repos with `allowAndroidBaselineApply=true` should follow guarded baseline path with explicit guarded reasoning, avoiding opaque unsupported-subtype outcomes.
+4. Optional semantic retrieval should produce `evidence/context/retrieval.json` on verify failures without changing terminal run semantics.
+
 ## Stage 5 Expected Deltas
 This section is intentionally pre-execution and contains expected outcomes only.
 
