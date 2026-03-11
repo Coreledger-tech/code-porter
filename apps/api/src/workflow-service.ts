@@ -32,6 +32,9 @@ import { MavenLombokPluginJava17BumpRecipe } from "@code-porter/recipes/src/reci
 import { MavenLombokDelombokPreparePackageRecipe } from "@code-porter/recipes/src/recipes/maven-lombok-delombok-prepare-package.js";
 import { MavenNashornIgnoreImportRewriteRecipe } from "@code-porter/recipes/src/recipes/maven-nashorn-ignore-import-rewrite.js";
 import { MavenJunitIgnoreCompatRecipe } from "@code-porter/recipes/src/recipes/maven-junit-ignore-compat.js";
+import { MavenNashornNamespaceRewriteRecipe } from "@code-porter/recipes/src/recipes/maven-nashorn-namespace-rewrite.js";
+import { MavenNashornCoreTestDependencyRecipe } from "@code-porter/recipes/src/recipes/maven-nashorn-core-test-dependency.js";
+import { MavenJunitIgnoreCompatV2Recipe } from "@code-porter/recipes/src/recipes/maven-junit-ignore-compat-v2.js";
 import { MavenSurefireSafeRecipe } from "@code-porter/recipes/src/recipes/maven-surefire-safe.js";
 import {
   CompositeDeterministicRemediator,
@@ -238,6 +241,21 @@ function buildJavaMavenTestCompatRecipes(): Recipe[] {
   ];
 }
 
+function buildJavaMavenTestCompatV2Recipes(): Recipe[] {
+  return [
+    new MavenCompilerTarget17Recipe(),
+    new MavenCompilerPluginBumpRecipe(),
+    new MavenLombokPluginJava17BumpRecipe(),
+    new MavenLombokDelombokPreparePackageRecipe(),
+    new MavenNashornNamespaceRewriteRecipe(),
+    new MavenJunitIgnoreCompatV2Recipe(),
+    new MavenNashornCoreTestDependencyRecipe(),
+    new MavenSurefireSafeRecipe(),
+    new MavenFailsafeSafeRecipe(),
+    new MavenJarPluginBumpRecipe()
+  ];
+}
+
 function buildJavaGradleJava17BaselineRecipes(): Recipe[] {
   return [new GradleWrapperJava17MinRecipe(), new GradleJava17BaselineRecipe()];
 }
@@ -248,6 +266,7 @@ const RECIPE_PACK_FACTORIES: Record<string, () => Recipe[]> = {
   "java-maven-lombok-java17-pack": buildJavaMavenLombokJava17Recipes,
   "java-maven-lombok-delombok-compat-pack": buildJavaMavenLombokDelombokCompatRecipes,
   "java-maven-test-compat-pack": buildJavaMavenTestCompatRecipes,
+  "java-maven-test-compat-v2-pack": buildJavaMavenTestCompatV2Recipes,
   "java-gradle-java17-baseline-pack": buildJavaGradleJava17BaselineRecipes
 };
 
