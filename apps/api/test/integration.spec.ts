@@ -1053,6 +1053,106 @@ describe("API integration", () => {
     expect(diff).toContain("@Disabled");
   });
 
+  it("applies maven test-compat v2 recipes with namespace rewrite and nashorn-core dependency ensure", async () => {
+    const repoPath = await prepareMavenRepo({
+      repoName: "code-porter-int-maven-test-compat-v2",
+      mutatePom: (pom) =>
+        pom.replace(
+          "<build>",
+          [
+            "  <dependencies>",
+            "    <dependency>",
+            "      <groupId>org.junit.jupiter</groupId>",
+            "      <artifactId>junit-jupiter</artifactId>",
+            "      <version>5.10.2</version>",
+            "      <scope>test</scope>",
+            "    </dependency>",
+            "  </dependencies>",
+            "",
+            "  <build>"
+          ].join("\n")
+        )
+    });
+    cleanupPaths.push(repoPath);
+    await mkdir(join(repoPath, "src", "test", "java", "com", "example"), { recursive: true });
+    await writeFile(
+      join(repoPath, "src", "test", "java", "com", "example", "NashornV2CompatTest.java"),
+      [
+        "package com.example;",
+        "import jdk.nashorn.internal.ir.annotations.Ignore;",
+        "import jdk.nashorn.api.scripting.ScriptObjectMirror;",
+        "public class NashornV2CompatTest {",
+        "  @Ignore",
+        "  void skipped() {",
+        "    ScriptObjectMirror mirror = null;",
+        "  }",
+        "}"
+      ].join("\n"),
+      "utf8"
+    );
+    await runGit(repoPath, ["add", "."]);
+    await runGit(repoPath, ["commit", "-m", "add stage5 nashorn test signatures"]);
+
+    const project = await apiFetch<{ id: string }>(baseUrl, "/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "integration-maven-test-compat-v2",
+        localPath: repoPath
+      })
+    });
+
+    const campaign = await apiFetch<{ id: string }>(baseUrl, "/campaigns", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectId: project.id,
+        policyId: "pilot-stage5",
+        recipePack: "java-maven-test-compat-v2-pack"
+      })
+    });
+
+    const applyStart = await apiFetch<{ runId: string; status: string }>(
+      baseUrl,
+      `/campaigns/${campaign.id}/apply`,
+      { method: "POST" }
+    );
+
+    const run = await waitForRunTerminal<{
+      status: string;
+      evidencePath: string;
+      evidenceArtifacts: Array<{ type: string; path: string }>;
+    }>({
+      baseUrl,
+      runId: applyStart.runId
+    });
+
+    expect(["completed", "needs_review", "blocked"]).toContain(run.status);
+    const applyArtifact = JSON.parse(
+      await readFile(
+        findArtifactPath(run.evidenceArtifacts, "apply.json", join(run.evidencePath, "apply.json")),
+        "utf8"
+      )
+    ) as {
+      recipesApplied?: string[];
+      advisories?: string[];
+    };
+    expect(applyArtifact.recipesApplied).toContain("java.maven.nashorn-namespace-rewrite");
+    expect(applyArtifact.recipesApplied).toContain("java.maven.junit-ignore-compat-v2");
+    expect(applyArtifact.recipesApplied).toContain("java.maven.nashorn-core-test-dependency");
+    expect(
+      applyArtifact.advisories?.some((advisory) => advisory.includes("Matched test-failure signature"))
+    ).toBe(true);
+
+    const diffArtifact = run.evidenceArtifacts.find((artifact) => artifact.type === "artifacts/diff.patch");
+    expect(diffArtifact).toBeDefined();
+    const diff = await readFile(diffArtifact!.path, "utf8");
+    expect(diff).toContain("org.openjdk.nashorn.api.scripting.ScriptObjectMirror");
+    expect(diff).toContain("<artifactId>nashorn-core</artifactId>");
+    expect(diff).toContain("import org.junit.jupiter.api.Disabled;");
+    expect(diff).toContain("@Disabled");
+  });
+
   it("classifies policy-excluded gradle repos as unsupported_build_system", async () => {
     const repoPath = await prepareGradleRepo({ repoName: "code-porter-int-gradle-policy" });
     cleanupPaths.push(repoPath);
@@ -1371,7 +1471,142 @@ describe("API integration", () => {
     };
     expect(verifyArtifact.compile.status).toBe("not_run");
     expect(verifyArtifact.tests.status).toBe("not_run");
-    expect(verifyArtifact.compile.reason).toContain("guarded baseline mode");
+    expect(verifyArtifact.compile.reason).toContain("skips Gradle task execution");
+  });
+
+  it("opens PR metadata for guarded Android gradle baseline and records explicit guarded reason", async () => {
+    const remoteRepo = await prepareGradleRepo({
+      repoName: "code-porter-int-stage5-guarded-android-github",
+      withWrapper: true,
+      android: true,
+      wrapperVersion: "6.9.4"
+    });
+    cleanupPaths.push(remoteRepo);
+    const remoteDefaultBranch = await runGitStdout(remoteRepo, ["rev-parse", "--abbrev-ref", "HEAD"]);
+
+    const originalAuthMode = process.env.GITHUB_AUTH_MODE;
+    const originalToken = process.env.GITHUB_TOKEN;
+    process.env.GITHUB_AUTH_MODE = "pat";
+    process.env.GITHUB_TOKEN = "integration-token";
+    const realFetch = global.fetch;
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.startsWith("http://127.0.0.1")) {
+        return realFetch(input, init);
+      }
+
+      if (url.includes("api.github.com/repos/Coreledger-tech/code-porter/pulls")) {
+        return new Response(
+          JSON.stringify({
+            html_url: "https://github.com/Coreledger-tech/code-porter/pull/987",
+            number: 987
+          }),
+          {
+            status: 201,
+            headers: { "content-type": "application/json" }
+          }
+        );
+      }
+
+      return new Response(JSON.stringify({ default_branch: "main" }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const project = await apiFetch<{ id: string }>(baseUrl, "/projects/github", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "stage5-guarded-android-github",
+          owner: "Coreledger-tech",
+          repo: "code-porter",
+          cloneUrl: remoteRepo,
+          defaultBranch: remoteDefaultBranch
+        })
+      });
+
+      const campaign = await apiFetch<{ id: string }>(baseUrl, "/campaigns", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: project.id,
+          policyId: "pilot-stage5",
+          recipePack: "java-gradle-guarded-baseline-pack",
+          targetSelector: remoteDefaultBranch
+        })
+      });
+
+      const applyStart = await apiFetch<{ runId: string; status: string }>(
+        baseUrl,
+        `/campaigns/${campaign.id}/apply`,
+        { method: "POST" }
+      );
+
+      const run = await waitForRunTerminal<{
+        status: string;
+        prUrl?: string | null;
+        summary: {
+          guardedBaselineReason?: string;
+          scan?: {
+            selectedBuildSystem?: string;
+            gradleProjectType?: string;
+          };
+        };
+        evidencePath: string;
+        evidenceArtifacts: Array<{ type: string; path: string }>;
+      }>({
+        baseUrl,
+        runId: applyStart.runId
+      });
+
+      expect(run.status).toBe("needs_review");
+      expect(run.prUrl).toBe("https://github.com/Coreledger-tech/code-porter/pull/987");
+      expect(run.summary.scan?.selectedBuildSystem).toBe("gradle");
+      expect(run.summary.scan?.gradleProjectType).toBe("android");
+      expect(run.summary.guardedBaselineReason).toContain("skips Gradle task execution");
+
+      const applyArtifact = JSON.parse(
+        await readFile(
+          findArtifactPath(run.evidenceArtifacts, "apply.json", join(run.evidencePath, "apply.json")),
+          "utf8"
+        )
+      ) as { recipesApplied?: string[] };
+      expect(applyArtifact.recipesApplied).toContain("java.gradle.wrapper-java17-min");
+      expect(applyArtifact.recipesApplied).toContain("java.gradle.guarded-properties-baseline");
+
+      const verifyArtifact = JSON.parse(
+        await readFile(
+          findArtifactPath(
+            run.evidenceArtifacts,
+            "verify.json",
+            join(run.evidencePath, "verify.json")
+          ),
+          "utf8"
+        )
+      ) as {
+        compile: { status: string; reason?: string };
+        tests: { status: string; reason?: string };
+      };
+      expect(verifyArtifact.compile.status).toBe("not_run");
+      expect(verifyArtifact.tests.status).toBe("not_run");
+      expect(verifyArtifact.compile.reason).toContain("skips Gradle task execution");
+    } finally {
+      if (originalAuthMode === undefined) {
+        delete process.env.GITHUB_AUTH_MODE;
+      } else {
+        process.env.GITHUB_AUTH_MODE = originalAuthMode;
+      }
+      if (originalToken === undefined) {
+        delete process.env.GITHUB_TOKEN;
+      } else {
+        process.env.GITHUB_TOKEN = originalToken;
+      }
+      vi.unstubAllGlobals();
+    }
   });
 
   it("applies Maven compile remediation and records remediation evidence", async () => {

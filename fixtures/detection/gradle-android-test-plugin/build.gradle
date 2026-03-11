@@ -1,0 +1,4 @@
+apply plugin: 'com.android.test'
+android {
+  namespace 'com.example.stage5.test'
+}

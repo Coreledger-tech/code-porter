@@ -33,6 +33,7 @@ function rewriteNamespace(
 
   for (const filePath of testJavaPaths(files)) {
     const current = files[filePath];
+    JDK_NASHORN_NAMESPACE.lastIndex = 0;
     if (!JDK_NASHORN_NAMESPACE.test(current)) {
       changes.push({
         filePath,

@@ -53,6 +53,16 @@ describe("runScanStep", () => {
     expect(result.metadata.gradleWrapperPath).toBe("gradlew");
   });
 
+  it("detects Android gradle subtype for com.android.test plugin form", async () => {
+    const result = await runScanStep(
+      resolve(process.cwd(), "fixtures/detection/gradle-android-test-plugin")
+    );
+
+    expect(result.buildSystem).toBe("gradle");
+    expect(result.metadata.gradleProjectType).toBe("android");
+    expect(result.metadata.gradleWrapperPath).toBe("gradlew");
+  });
+
   it("detects python roots explicitly", async () => {
     const result = await runScanStep(resolve(process.cwd(), "fixtures/detection/python-root"));
 
