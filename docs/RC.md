@@ -50,10 +50,26 @@ docker pull ghcr.io/coreledger-tech/code-porter:v1.0.0-rc.2
 git clone https://github.com/Coreledger-tech/code-porter.git /tmp/code-porter-rc-smoke
 cd /tmp/code-porter-rc-smoke
 cp .env.example .env
-docker compose up --build -d
+docker compose -p codeporter-rc-smoke up --build -d
 curl -s http://localhost:3000/health | jq
 curl -s http://localhost:3000/metrics | head -n 20
-docker compose down -v
+docker compose -p codeporter-rc-smoke down -v
+```
+
+## Compose Reliability Notes
+1. Compose no longer relies on fixed `container_name` values, so parallel stacks can run without global name collisions.
+2. Container-mode defaults for `migrate`, `api`, `worker`, and `pr-poller` must use `postgres` as DB host unless explicitly overridden.
+3. Host-local workflows remain supported by overriding `DATABASE_URL` outside compose.
+
+## Non-interactive Smoke Checklist
+Run in order:
+```bash
+docker compose -p codeporter-rc-smoke up -d postgres minio
+docker compose -p codeporter-rc-smoke up migrate
+docker compose -p codeporter-rc-smoke up -d api worker pr-poller
+curl -sS http://localhost:3000/health | jq
+curl -sS http://localhost:3000/metrics | head -n 20
+docker compose -p codeporter-rc-smoke down -v
 ```
 
 ## Integration Test Isolation

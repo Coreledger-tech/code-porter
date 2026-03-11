@@ -318,6 +318,22 @@
 - Stage 4 report snapshot: `/tmp/pilot-report-stage4-7d.json`
 - Policy ID: `pilot-stage4`
 - Maven pack: `java-maven-test-compat-pack`
+
+## Stage 5 Expected Deltas
+This section is intentionally pre-execution and contains expected outcomes only.
+
+1. Axum test-compat v2 should reduce test-side compatibility failures by:
+   - rewriting `jdk.nashorn.*` test imports/references to `org.openjdk.nashorn.*`
+   - ensuring `org.openjdk.nashorn:nashorn-core:15.4` test dependency when required
+   - normalizing `@Ignore` usage by JUnit lane (`@Disabled` for JUnit5, dependency ensure for JUnit4)
+2. Android Gradle repos should move from opaque lane outcomes to deterministic guarded baseline outcomes:
+   - baseline wrapper/properties edits only
+   - no Gradle task execution
+   - terminal `needs_review` with explicit `summary.guardedBaselineReason`
+3. Pilot policy migration from `pilot-stage4` to `pilot-stage5` should preserve cohort comparability while isolating Stage 5 behavior.
+4. Compose startup and migration should be more repeatable in container mode due to:
+   - no fixed global container names
+   - service-host DB defaults (`postgres`) for migration/runtime services.
 - Gradle pack: `java-gradle-java17-baseline-pack`
 
 ### GHCR Verification Closure
