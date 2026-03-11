@@ -408,55 +408,55 @@ This section is intentionally pre-execution and contains expected outcomes only.
 - Expected impact: reduce flake/needs-review pressure from Maven fetch instability.
 
 ## Stage 6 Results
-- Stage 6 cohort artifact: `/Users/kelvinmusodza/Downloads/Code porter/evidence/pilot/2026-03-11T05-46-04-550Z/pilot-summary.json`
-- Stage 6 report snapshot (`7d`): `generatedAt=2026-03-11T05:46:04.549Z`
+- Stage 6 cohort artifact: `/Users/kelvinmusodza/Downloads/Code porter/evidence/pilot/2026-03-11T06-11-16-047Z/pilot-summary.json`
+- Stage 6 report snapshot (`7d`): `generatedAt=2026-03-11T06:11:34.204Z`
 - Policy ID: `pilot-stage6`
-- Maven pack: `java-maven-test-compat-v2-pack`
+- Maven pack: `java-maven-test-compat-pack`
 - Gradle pack: `java-gradle-guarded-baseline-pack`
 
 ### Targeted Gates (Pre-Cohort)
 1. Axum targeted apply gate
-- runId: `d32fed9d-98bd-40cc-91e5-7b694b662f3d`
+- runId: `6e504091-b2da-4467-9076-bfeed8d6f549`
 - status: `needs_review`
 - failureKind: `code_compile_failure`
 - remediation evidence: `remediation-test-runtime.json` + `artifacts/remediation-test-runtime-1.patch`
 - remediation rule applied: `ensure_add_opens_sun_nio_ch`
-- PR opened: `https://github.com/Coreledger-tech/Axum-matching-engine/pull/13`
-- outcome: Stage 6 test-runtime remediator executed and persisted evidence; terminal failure is narrowed away from generic `code_test_failure`.
+- PR opened: `https://github.com/Coreledger-tech/Axum-matching-engine/pull/15`
+- outcome: Stage 6 remediator fired on `triggerFailureKind=java17_module_access_test_failure`; verify-after moved to `testsFailureKind=code_test_failure` while terminal run classification remained `code_compile_failure`.
 
 2. Android targeted guarded-baseline gate
-- runId: `a229eb0f-f270-4b9a-b1de-4f01be140650`
+- runId: `5985ea5f-b21d-435b-8e4f-8ad9d6bd5278`
 - status: `needs_review`
-- failureKind: `unsupported_build_system`
-- scan disposition: `unsupported_subtype`
-- gradleProjectType: `unknown`
-- PR opened: none
-- outcome: guarded baseline did not engage for this targeted run; classification still landed in unsupported subtype.
+- failureKind: `null` (guarded lane)
+- scan disposition: `supported`
+- gradleProjectType: `android`
+- PR opened: `https://github.com/Coreledger-tech/android-ESP-32-bluetooth-arduino/pull/1`
+- outcome: guarded Android baseline engaged as designed with explicit `summary.guardedBaselineReason`.
 
 ### Full 5-Repo Cohort Rerun (Stage 6)
-| repo | applyStatus | failureKind | disposition | gradleProjectType | remediation | prUrl |
-| --- | --- | --- | --- | --- | --- | --- |
-| Java-Web-Crawler | `completed` |  | `supported` |  | none |  |
-| Axum-matching-engine | `needs_review` | `code_compile_failure` | `supported` |  | `ensure_add_opens_sun_nio_ch` | `https://github.com/Coreledger-tech/Axum-matching-engine/pull/14` |
-| authelia-TOTP | `needs_review` | `unsupported_build_system` | `excluded_by_policy` |  | none |  |
-| Exception-handling-reconciliation | `needs_review` | `unsupported_build_system` | `no_supported_manifest` |  | none |  |
-| android-ESP-32-bluetooth-arduino | `needs_review` | `unsupported_build_system` | `unsupported_subtype` | `unknown` | none |  |
+| repo | applyRunId | applyStatus | failureKind | disposition | gradleProjectType | remediation | prUrl |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Java-Web-Crawler | `274e7a78-47cf-4bd6-ba78-a0d93979376e` | `completed` |  | `supported` |  | none |  |
+| Axum-matching-engine | `805230d5-3343-4f2b-aba9-b7dca100a0a2` | `needs_review` | `code_compile_failure` | `supported` |  | `ensure_add_opens_sun_nio_ch` | `https://github.com/Coreledger-tech/Axum-matching-engine/pull/16` |
+| authelia-TOTP | `80a6ef8e-3612-4995-b1d4-73345743bb81` | `needs_review` | `unsupported_build_system` | `excluded_by_policy` |  | none |  |
+| Exception-handling-reconciliation | `7b3a9187-9593-4a9c-b8ff-5f699b48561a` | `needs_review` | `unsupported_build_system` | `no_supported_manifest` |  | none |  |
+| android-ESP-32-bluetooth-arduino | `3d5dbdd3-bc54-4fee-8d02-b65d3d914402` | `needs_review` |  | `supported` | `android` | none | `https://github.com/Coreledger-tech/android-ESP-32-bluetooth-arduino/pull/2` |
 
 ### Stage 6 Metrics Snapshot
 - Cohort statuses: `completed=1`, `needs_review=9`, `blocked=0`
-- Cohort failure kinds: `unsupported_build_system=5`, `code_compile_failure=1`
+- Cohort failure kinds: `unsupported_build_system=4`, `code_compile_failure=1`
 - Cohort retries: `0`
-- Cohort PR outcomes: `opened=1`, `merged=0`, `closed=0`
+- Cohort PR outcomes: `opened=2`, `merged=0`, `closed=0`
 - 7d aggregate report:
   - totalsByStatus: `needs_review=12`, `completed=1`
-  - topFailureKinds: `unsupported_build_system=6`, `unknown=4`, `code_compile_failure=2`, `code_test_failure=1`
-  - prOutcomes: `opened=2`, `merged=0`, `open=2`, `mergeRate=0`
+  - topFailureKinds: `unknown=6`, `unsupported_build_system=4`, `code_compile_failure=2`, `code_test_failure=1`
+  - prOutcomes: `opened=4`, `merged=0`, `open=4`, `mergeRate=0`
   - retryRate: `1/13 = 7.69%`
 
 ### Stage 6 Delta Assessment
-1. Axum path improved.
-- The run remained `needs_review`, but failure classification narrowed to `code_compile_failure` and Stage 6 module-access test-runtime remediation was applied with explicit evidence artifacts.
-2. Android guarded baseline objective is still incomplete.
-- The Android repo is detected as Gradle, but apply still returns `unsupported_subtype` and does not open a PR in this run.
-3. Portfolio-level outcomes are stable but not yet improved.
-- Completed count remained `1` and merge count remained `0`; unsupported lanes still dominate the cohort.
+1. Axum path remains narrowed with deterministic remediation evidence.
+- Module-access remediator fired and produced explicit patch/evidence artifacts, but the final run still settled on `code_compile_failure`.
+2. Android guarded baseline objective passed.
+- Android is classified as `gradle/android`, executes guarded apply, and opens PRs with explicit guarded reason.
+3. Signature-absent no-op behavior is preserved in non-Axum cohort runs.
+- Runs without module-access signatures (for example Java-Web-Crawler) show no test-runtime remediation rule application (`remediationRules=[]`).
