@@ -203,6 +203,7 @@ async function prepareGradleRepo(input: {
   withWrapper?: boolean;
   android?: boolean;
   buildFileContent?: string;
+  wrapperVersion?: string;
 }): Promise<string> {
   const repoPath = await mkdtemp(join(tmpdir(), `${input.repoName}-`));
   await mkdir(join(repoPath, "src", "main", "java"), { recursive: true });
@@ -217,6 +218,18 @@ async function prepareGradleRepo(input: {
   await writeFile(join(repoPath, "src", "main", "java", "App.java"), "class App {}\n", "utf8");
   if (input.withWrapper) {
     await writeFile(join(repoPath, "gradlew"), "#!/bin/sh\nexit 0\n", "utf8");
+    await mkdir(join(repoPath, "gradle", "wrapper"), { recursive: true });
+    await writeFile(
+      join(repoPath, "gradle", "wrapper", "gradle-wrapper.properties"),
+      [
+        "distributionBase=GRADLE_USER_HOME",
+        "distributionPath=wrapper/dists",
+        `distributionUrl=https\\://services.gradle.org/distributions/gradle-${input.wrapperVersion ?? "7.6.4"}-bin.zip`,
+        "zipStoreBase=GRADLE_USER_HOME",
+        "zipStorePath=wrapper/dists"
+      ].join("\n"),
+      "utf8"
+    );
   }
 
   await runGit(repoPath, ["init"]);
@@ -922,6 +935,102 @@ describe("API integration", () => {
     expect(diff).toContain("prepare-package");
   });
 
+  it("applies maven test-compat recipes and records matched test-signature rewrites", async () => {
+    const repoPath = await prepareMavenRepo({
+      repoName: "code-porter-int-maven-test-compat",
+      mutatePom: (pom) =>
+        pom.replace(
+          "<build>",
+          [
+            "  <dependencies>",
+            "    <dependency>",
+            "      <groupId>org.junit.jupiter</groupId>",
+            "      <artifactId>junit-jupiter</artifactId>",
+            "      <version>5.10.2</version>",
+            "      <scope>test</scope>",
+            "    </dependency>",
+            "  </dependencies>",
+            "",
+            "  <build>"
+          ].join("\n")
+        )
+    });
+    cleanupPaths.push(repoPath);
+    await mkdir(join(repoPath, "src", "test", "java", "com", "example"), { recursive: true });
+    await writeFile(
+      join(repoPath, "src", "test", "java", "com", "example", "NashornIgnoreTest.java"),
+      [
+        "package com.example;",
+        "import jdk.nashorn.internal.ir.annotations.Ignore;",
+        "public class NashornIgnoreTest {",
+        "  @Ignore",
+        "  void skipped() {}",
+        "}"
+      ].join("\n"),
+      "utf8"
+    );
+    await runGit(repoPath, ["add", "."]);
+    await runGit(repoPath, ["commit", "-m", "add nashorn ignore test signature"]);
+
+    const project = await apiFetch<{ id: string }>(baseUrl, "/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "integration-maven-test-compat",
+        localPath: repoPath
+      })
+    });
+
+    const campaign = await apiFetch<{ id: string }>(baseUrl, "/campaigns", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectId: project.id,
+        policyId: "default",
+        recipePack: "java-maven-test-compat-pack"
+      })
+    });
+
+    const applyStart = await apiFetch<{ runId: string; status: string }>(
+      baseUrl,
+      `/campaigns/${campaign.id}/apply`,
+      { method: "POST" }
+    );
+
+    const run = await waitForRunTerminal<{
+      status: string;
+      evidencePath: string;
+      evidenceArtifacts: Array<{ type: string; path: string }>;
+    }>({
+      baseUrl,
+      runId: applyStart.runId
+    });
+
+    expect(["completed", "needs_review", "blocked"]).toContain(run.status);
+    const applyArtifact = JSON.parse(
+      await readFile(
+        findArtifactPath(run.evidenceArtifacts, "apply.json", join(run.evidencePath, "apply.json")),
+        "utf8"
+      )
+    ) as {
+      recipesApplied?: string[];
+      advisories?: string[];
+    };
+    expect(applyArtifact.recipesApplied).toContain("java.maven.nashorn-ignore-import-rewrite");
+    expect(applyArtifact.recipesApplied).toContain("java.maven.junit-ignore-compat");
+    expect(
+      applyArtifact.advisories?.some((advisory) =>
+        advisory.includes("Matched test-failure signature")
+      )
+    ).toBe(true);
+
+    const diffArtifact = run.evidenceArtifacts.find((artifact) => artifact.type === "artifacts/diff.patch");
+    expect(diffArtifact).toBeDefined();
+    const diff = await readFile(diffArtifact!.path, "utf8");
+    expect(diff).toContain("import org.junit.jupiter.api.Disabled;");
+    expect(diff).toContain("@Disabled");
+  });
+
   it("classifies policy-excluded gradle repos as unsupported_build_system", async () => {
     const repoPath = await prepareGradleRepo({ repoName: "code-porter-int-gradle-policy" });
     cleanupPaths.push(repoPath);
@@ -1158,6 +1267,89 @@ describe("API integration", () => {
     expect(run.summary.scan?.buildSystemDisposition).toBe("unsupported_subtype");
     expect(run.summary.scan?.gradleProjectType).toBe("android");
     expect(run.summary.scan?.buildSystemReason).toContain("out of scope");
+  });
+
+  it("allows guarded Android gradle baseline apply mode and returns precise needs_review verify reason", async () => {
+    const repoPath = await prepareGradleRepo({
+      repoName: "code-porter-int-gradle-android-stage4",
+      withWrapper: true,
+      android: true,
+      wrapperVersion: "6.9.4"
+    });
+    cleanupPaths.push(repoPath);
+
+    const project = await apiFetch<{ id: string }>(baseUrl, "/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "integration-gradle-android-stage4",
+        localPath: repoPath
+      })
+    });
+
+    const campaign = await apiFetch<{ id: string }>(baseUrl, "/campaigns", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectId: project.id,
+        policyId: "pilot-stage4",
+        recipePack: "java-gradle-java17-baseline-pack"
+      })
+    });
+
+    const applyStart = await apiFetch<{ runId: string; status: string }>(
+      baseUrl,
+      `/campaigns/${campaign.id}/apply`,
+      { method: "POST" }
+    );
+
+    const run = await waitForRunTerminal<{
+      status: string;
+      summary: {
+        failureKind?: string;
+        scan?: {
+          buildSystemDisposition?: string;
+          gradleProjectType?: string;
+          buildSystemReason?: string;
+        };
+      };
+      evidencePath: string;
+      evidenceArtifacts: Array<{ type: string; path: string }>;
+    }>({
+      baseUrl,
+      runId: applyStart.runId
+    });
+
+    expect(run.status).toBe("needs_review");
+    expect(run.summary.failureKind).toBe("unsupported_build_system");
+    expect(run.summary.scan?.buildSystemDisposition).toBe("unsupported_subtype");
+    expect(run.summary.scan?.gradleProjectType).toBe("android");
+    expect(run.summary.scan?.buildSystemReason).toContain("out of scope");
+
+    const applyArtifact = JSON.parse(
+      await readFile(
+        findArtifactPath(run.evidenceArtifacts, "apply.json", join(run.evidencePath, "apply.json")),
+        "utf8"
+      )
+    ) as { recipesApplied?: string[] };
+    expect(applyArtifact.recipesApplied).toContain("java.gradle.wrapper-java17-min");
+
+    const verifyArtifact = JSON.parse(
+      await readFile(
+        findArtifactPath(
+          run.evidenceArtifacts,
+          "verify.json",
+          join(run.evidencePath, "verify.json")
+        ),
+        "utf8"
+      )
+    ) as {
+      compile: { status: string; reason?: string };
+      tests: { status: string; reason?: string };
+    };
+    expect(verifyArtifact.compile.status).toBe("not_run");
+    expect(verifyArtifact.tests.status).toBe("not_run");
+    expect(verifyArtifact.compile.reason).toContain("guarded baseline mode");
   });
 
   it("applies Maven compile remediation and records remediation evidence", async () => {

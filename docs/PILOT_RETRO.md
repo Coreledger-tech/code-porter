@@ -312,3 +312,73 @@
 1. Review `Axum-matching-engine` PR `#9` as a merge candidate for compile-side modernization; treat the remaining test failures as the next deterministic/test lane target.
 2. Keep Android subtype refinement out of the critical path unless the next pilot specifically needs Android support.
 3. For `rc.3+`, verify GHCR native arm pulls after the multi-arch publish workflow runs on a new tag.
+
+## Stage 4 Results
+- Stage 4 cohort artifact: `/Users/kelvinmusodza/Downloads/Code porter/evidence/pilot/2026-03-10T06-45-50-557Z/pilot-summary.json`
+- Stage 4 report snapshot: `/tmp/pilot-report-stage4-7d.json`
+- Policy ID: `pilot-stage4`
+- Maven pack: `java-maven-test-compat-pack`
+- Gradle pack: `java-gradle-java17-baseline-pack`
+
+### GHCR Verification Closure
+- Verification mode is now reproducible and documented.
+- Current package setting remains private; authenticated pull works with PAT.
+- `npm run verify:ghcr -- --tag v1.0.0-rc.2` succeeds using login credentials.
+- `rc.2` remains single-arch in registry history; multi-arch validation should be asserted on the next tag publish.
+
+### Axum Targeted Gate (Stage 4)
+- Targeted run: `fee733e3-0ae9-4378-bd66-56893134740e`
+- Status: `needs_review`
+- Failure kind: `code_test_failure`
+- PR: `https://github.com/Coreledger-tech/Axum-matching-engine/pull/10`
+- Deterministic actions recorded in evidence:
+  - Lombok plugin bump + delombok phase shift
+  - Nashorn Ignore import rewrite in test sources
+  - JUnit Ignore compatibility rewrite to JUnit 5 `@Disabled`
+- Gate outcome:
+  - Prior Lombok plugin/runtime crash signature remained eliminated
+  - Failure moved to normal test-side incompatibility, which is within the intended Stage 4 scope
+
+### Full 5-Repo Cohort Rerun (Stage 4)
+| repo | applyStatus | failureKind | disposition | prUrl |
+| --- | --- | --- | --- | --- |
+| Java-Web-Crawler | `completed` |  | `supported` |  |
+| Axum-matching-engine | `needs_review` | `code_test_failure` | `supported` | `https://github.com/Coreledger-tech/Axum-matching-engine/pull/11` |
+| authelia-TOTP | `needs_review` | `unsupported_build_system` | `excluded_by_policy` |  |
+| Exception-handling-reconciliation | `needs_review` | `unsupported_build_system` | `no_supported_manifest` |  |
+| android-ESP-32-bluetooth-arduino | `needs_review` | `unsupported_build_system` | `unsupported_subtype` |  |
+
+### Stage 4 Comparison vs Stage 3
+| metric | Stage 3 | Stage 4 |
+| --- | --- | --- |
+| completed apply runs | `1` | `1` |
+| needs_review apply runs | `4` | `4` |
+| blocked apply runs | `0` | `0` |
+| open PRs from cohort apply | `1` | `1` |
+| Axum targeted gate PR | `#8`/`#9` sequence | `#10` |
+| dominant cohort failure kind | `unsupported_build_system` | `unsupported_build_system` |
+| Axum lane failure kind | `code_test_failure` | `code_test_failure` |
+
+### Metrics Snapshot (`/reports/pilot?window=7d`, captured after Stage 4 rerun)
+- totalsByStatus: `needs_review=11`, `completed=1`, `cancelling=1`
+- topFailureKinds:
+  - `unsupported_build_system=6`
+  - `unknown=4` (historical rows in 7d window)
+  - `code_test_failure=3`
+- prOutcomes: `opened=2`, `merged=0`, `open=2`, `mergeRate=0`
+- retryRate: `2/13 = 15.38%`
+- timeToGreen: no merged sample yet
+
+### Top 3 Blockers After Stage 4
+1. Unsupported lanes still dominate (`unsupported_build_system`) in this cohort.
+2. Axum has moved into test-compat work; compile/toolchain blocker is no longer the leading issue.
+3. Android Gradle repo is explicit but still non-actionable under current subtype classification (`unsupported_subtype`, `gradleProjectType=unknown`).
+
+### Next Pack Priorities (Data-Driven)
+1. `java-junit5-transition-pack`
+- Trigger evidence: persistent `code_test_failure` on Axum after compile/toolchain fixes.
+- Expected impact: reduce remaining test annotation/framework drift.
+
+2. `java-maven-repository-resilience-pack`
+- Trigger evidence: recurring report recommendation and historical resolver-related noise in mixed pilot windows.
+- Expected impact: reduce flake/needs-review pressure from Maven fetch instability.
