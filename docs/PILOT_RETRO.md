@@ -406,3 +406,57 @@ This section is intentionally pre-execution and contains expected outcomes only.
 2. `java-maven-repository-resilience-pack`
 - Trigger evidence: recurring report recommendation and historical resolver-related noise in mixed pilot windows.
 - Expected impact: reduce flake/needs-review pressure from Maven fetch instability.
+
+## Stage 6 Results
+- Stage 6 cohort artifact: `/Users/kelvinmusodza/Downloads/Code porter/evidence/pilot/2026-03-11T05-46-04-550Z/pilot-summary.json`
+- Stage 6 report snapshot (`7d`): `generatedAt=2026-03-11T05:46:04.549Z`
+- Policy ID: `pilot-stage6`
+- Maven pack: `java-maven-test-compat-v2-pack`
+- Gradle pack: `java-gradle-guarded-baseline-pack`
+
+### Targeted Gates (Pre-Cohort)
+1. Axum targeted apply gate
+- runId: `d32fed9d-98bd-40cc-91e5-7b694b662f3d`
+- status: `needs_review`
+- failureKind: `code_compile_failure`
+- remediation evidence: `remediation-test-runtime.json` + `artifacts/remediation-test-runtime-1.patch`
+- remediation rule applied: `ensure_add_opens_sun_nio_ch`
+- PR opened: `https://github.com/Coreledger-tech/Axum-matching-engine/pull/13`
+- outcome: Stage 6 test-runtime remediator executed and persisted evidence; terminal failure is narrowed away from generic `code_test_failure`.
+
+2. Android targeted guarded-baseline gate
+- runId: `a229eb0f-f270-4b9a-b1de-4f01be140650`
+- status: `needs_review`
+- failureKind: `unsupported_build_system`
+- scan disposition: `unsupported_subtype`
+- gradleProjectType: `unknown`
+- PR opened: none
+- outcome: guarded baseline did not engage for this targeted run; classification still landed in unsupported subtype.
+
+### Full 5-Repo Cohort Rerun (Stage 6)
+| repo | applyStatus | failureKind | disposition | gradleProjectType | remediation | prUrl |
+| --- | --- | --- | --- | --- | --- | --- |
+| Java-Web-Crawler | `completed` |  | `supported` |  | none |  |
+| Axum-matching-engine | `needs_review` | `code_compile_failure` | `supported` |  | `ensure_add_opens_sun_nio_ch` | `https://github.com/Coreledger-tech/Axum-matching-engine/pull/14` |
+| authelia-TOTP | `needs_review` | `unsupported_build_system` | `excluded_by_policy` |  | none |  |
+| Exception-handling-reconciliation | `needs_review` | `unsupported_build_system` | `no_supported_manifest` |  | none |  |
+| android-ESP-32-bluetooth-arduino | `needs_review` | `unsupported_build_system` | `unsupported_subtype` | `unknown` | none |  |
+
+### Stage 6 Metrics Snapshot
+- Cohort statuses: `completed=1`, `needs_review=9`, `blocked=0`
+- Cohort failure kinds: `unsupported_build_system=5`, `code_compile_failure=1`
+- Cohort retries: `0`
+- Cohort PR outcomes: `opened=1`, `merged=0`, `closed=0`
+- 7d aggregate report:
+  - totalsByStatus: `needs_review=12`, `completed=1`
+  - topFailureKinds: `unsupported_build_system=6`, `unknown=4`, `code_compile_failure=2`, `code_test_failure=1`
+  - prOutcomes: `opened=2`, `merged=0`, `open=2`, `mergeRate=0`
+  - retryRate: `1/13 = 7.69%`
+
+### Stage 6 Delta Assessment
+1. Axum path improved.
+- The run remained `needs_review`, but failure classification narrowed to `code_compile_failure` and Stage 6 module-access test-runtime remediation was applied with explicit evidence artifacts.
+2. Android guarded baseline objective is still incomplete.
+- The Android repo is detected as Gradle, but apply still returns `unsupported_subtype` and does not open a PR in this run.
+3. Portfolio-level outcomes are stable but not yet improved.
+- Completed count remained `1` and merge count remained `0`; unsupported lanes still dominate the cohort.
