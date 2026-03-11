@@ -54,6 +54,9 @@ const DEFAULT_POLICY: PolicyConfig = {
       purgeLocalCache: false
     }
   },
+  gradle: {
+    allowAndroidBaselineApply: false
+  },
   remediation: {
     mavenCompile: {
       enabled: false,
@@ -182,6 +185,7 @@ function normalizePolicy(raw: unknown): PolicyConfig {
   const thresholds = (config.confidenceThresholds ?? {}) as Record<string, unknown>;
   const verify = (config.verify ?? null) as Record<string, unknown> | null;
   const remediation = (config.remediation ?? null) as Record<string, unknown> | null;
+  const gradle = (config.gradle ?? null) as Record<string, unknown> | null;
 
   const verifyFailureMode = asVerifyFailureMode(
     config.verifyFailureMode,
@@ -308,6 +312,12 @@ function normalizePolicy(raw: unknown): PolicyConfig {
     }),
     verifyFailureMode,
     verify: normalizedVerify,
+    gradle: {
+      allowAndroidBaselineApply: asBoolean(
+        gradle?.allowAndroidBaselineApply,
+        DEFAULT_POLICY.gradle?.allowAndroidBaselineApply ?? false
+      )
+    },
     remediation:
       normalizedMavenCompileRemediation
         ? {
@@ -392,15 +402,21 @@ export class YamlPolicyEngine implements PolicyEngine {
     const buildSystemReason =
       input.buildSystemReason ?? `Build system '${input.buildSystem}' was detected`;
 
+    const allowAndroidBaselineSubtype =
+      input.buildSystemDisposition === "unsupported_subtype" &&
+      input.buildSystem === "gradle" &&
+      input.gradleProjectType === "android" &&
+      policy.gradle?.allowAndroidBaselineApply === true;
+
     if (
-      input.buildSystemDisposition === "unsupported_subtype" ||
+      (!allowAndroidBaselineSubtype && input.buildSystemDisposition === "unsupported_subtype") ||
       input.buildSystemDisposition === "no_supported_manifest" ||
       !policy.allowedBuildSystems.includes(input.buildSystem)
     ) {
       const reason =
         input.buildSystemDisposition === "no_supported_manifest"
           ? buildSystemReason
-          : input.buildSystemDisposition === "unsupported_subtype"
+          : input.buildSystemDisposition === "unsupported_subtype" && !allowAndroidBaselineSubtype
             ? buildSystemReason
           : `Build system '${input.buildSystem}' is not allowed by policy (manifest: '${selectedManifestPath}', build root: '${selectedBuildRoot}')`;
       decisions.push({
@@ -415,7 +431,9 @@ export class YamlPolicyEngine implements PolicyEngine {
         id: "allowed_build_system",
         stage: "scan",
         status: "allow",
-        reason: `Build system '${input.buildSystem}' is allowed (manifest: '${selectedManifestPath}', build root: '${selectedBuildRoot}')`,
+        reason: allowAndroidBaselineSubtype
+          ? "Gradle Android baseline apply mode is enabled; allowing deterministic plan/apply while guarded verify remains out of scope"
+          : `Build system '${input.buildSystem}' is allowed (manifest: '${selectedManifestPath}', build root: '${selectedBuildRoot}')`,
         blocking: false
       });
     }

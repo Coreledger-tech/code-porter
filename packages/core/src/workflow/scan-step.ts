@@ -256,7 +256,7 @@ async function detectGradleMetadata(
   }
 
   if (
-    /com\.android\.application|com\.android\.library|id\("com\.android\.(application|library)"\)|android\s*\{/i.test(
+    /com\.android\.application|com\.android\.library|id\("com\.android\.(application|library)"\)|apply\s+plugin:\s*['"]com\.android\.(application|library)['"]|android\s*\{/i.test(
       combined
     )
   ) {

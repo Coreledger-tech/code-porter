@@ -28,6 +28,7 @@ describe("YamlPolicyEngine", () => {
     expect(policy.verify.nonBlockingFailureKinds).toContain("artifact_resolution");
     expect(policy.verify.retryOnCachedResolution).toBe(true);
     expect(policy.verify.maven.forceUpdate).toBe(true);
+    expect(policy.gradle?.allowAndroidBaselineApply).toBe(false);
     expect(policy.remediation?.mavenCompile?.enabled).toBe(false);
     expect(policy.confidenceThresholds.pass).toBe(70);
   });
@@ -150,5 +151,49 @@ describe("YamlPolicyEngine", () => {
     expect(policy.defaultRecipePack).toBe("java-maven-plugin-modernize");
     expect(policy.maxInflightRunsPerProject).toBe(2);
     expect(policy.maxInflightRunsGlobal).toBe(10);
+  });
+
+  it("allows gradle android subtype when policy enables guarded baseline apply mode", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "code-porter-policy-"));
+    const policyPath = join(tempDir, "gradle-android-allow.yaml");
+    await writeFile(
+      policyPath,
+      [
+        "allowedBuildSystems:",
+        "  - maven",
+        "  - gradle",
+        "gradle:",
+        "  allowAndroidBaselineApply: true",
+        "confidenceThresholds:",
+        "  pass: 70",
+        "  needsReview: 55"
+      ].join("\n"),
+      "utf8"
+    );
+
+    const engine = new YamlPolicyEngine();
+    const policy = await engine.load(policyPath);
+
+    expect(policy.gradle?.allowAndroidBaselineApply).toBe(true);
+    const decisions = engine.evaluatePlan(
+      {
+        buildSystem: "gradle",
+        filesChanged: 1,
+        linesChanged: 8,
+        buildSystemDisposition: "unsupported_subtype",
+        buildSystemReason: "Gradle Android projects are out of scope for the Stage 3 JVM-only lane",
+        gradleProjectType: "android"
+      },
+      policy
+    );
+
+    expect(
+      decisions.some(
+        (decision) =>
+          decision.id === "allowed_build_system" &&
+          decision.status === "allow" &&
+          decision.reason.includes("baseline apply mode is enabled")
+      )
+    ).toBe(true);
   });
 });

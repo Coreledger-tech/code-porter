@@ -27,6 +27,8 @@ verify:
     forceUpdate: true
     prefetchPlugins: true
     purgeLocalCache: false
+gradle:
+  allowAndroidBaselineApply: false
 remediation:
   mavenCompile:
     enabled: true

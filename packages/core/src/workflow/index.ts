@@ -140,6 +140,33 @@ function verifyForPlanMode(
   };
 }
 
+function verifyForGuardedAndroidMode(
+  buildSystem: VerifySummary["buildSystem"],
+  hasTests: boolean
+): VerifySummary {
+  const reason = "Gradle Android full verify is out of scope for guarded baseline mode";
+  return {
+    buildSystem,
+    hasTests,
+    compile: {
+      status: "not_run",
+      reason
+    },
+    tests: {
+      status: "not_run",
+      reason
+    },
+    staticChecks: {
+      status: "passed",
+      reason: "Guarded Android baseline mode skips compile/test execution"
+    },
+    remediationSuggestions: [
+      "Run full Android CI (assemble/test) outside Code Porter before merge",
+      "Use this PR as a deterministic Java 17 baseline proposal"
+    ]
+  };
+}
+
 function gatherVerifyFailureKinds(summary: VerifySummary): VerifyFailureKind[] {
   const kinds: VerifyFailureKind[] = [];
 
@@ -355,6 +382,7 @@ export async function executeWorkflow(input: {
   let verifySummary: VerifySummary;
   let remediationActions: RemediationAction[] = [];
   let commitAfter: string | undefined;
+  let guardedAndroidBaselineMode = false;
 
   const planBlocking = hasBlockingDecision(policyDecisions);
 
@@ -409,104 +437,138 @@ export async function executeWorkflow(input: {
       }
     });
 
-    await emit({
-      eventType: "step_start",
-      step: "verify",
-      message: "Running verifier checks"
-    });
-    verifySummary = await input.verifier.run(scanResult, buildRootPath, policy);
+    guardedAndroidBaselineMode =
+      scanResult.buildSystem === "gradle" &&
+      scanResult.metadata.gradleProjectType === "android" &&
+      policy.gradle?.allowAndroidBaselineApply === true;
 
-    if (input.remediator) {
-      const remediation = input.remediator.appliesTo({
-        scan: scanResult,
-        verify: verifySummary,
-        policy
-      })
-        ? await input.remediator.run({
-            scan: scanResult,
-            verify: verifySummary,
-            repoPath: buildRootPath,
-            policy,
-            verifier: input.verifier
-          })
-        : {
-            applied: false,
-            actions: [
-              {
-                action: "deterministic_remediation",
-                status: "skipped" as const,
-                reason: "Remediator not applicable"
-              }
-            ],
-            verifySummary,
-            reason: "not_applicable"
-          };
+    if (guardedAndroidBaselineMode) {
+      await emit({
+        eventType: "step_start",
+        step: "verify",
+        message: "Skipping full verify for guarded Android Gradle baseline mode"
+      });
+      verifySummary = verifyForGuardedAndroidMode(scanResult.buildSystem, scanResult.hasTests);
+      await input.evidenceWriter.write(runContext, "remediation.json", {
+        applied: false,
+        reason: "not_applicable",
+        actions: []
+      });
+      await input.evidenceWriter.write(runContext, "agentic-remediation.json", {
+        applied: false,
+        reason: "not_applicable",
+        actions: []
+      });
+      await emit({
+        eventType: "step_end",
+        step: "verify",
+        message: "Guarded Android verify stage complete",
+        payload: {
+          compile: verifySummary.compile.status,
+          tests: verifySummary.tests.status,
+          staticChecks: verifySummary.staticChecks.status
+        }
+      });
+    } else {
+      await emit({
+        eventType: "step_start",
+        step: "verify",
+        message: "Running verifier checks"
+      });
+      verifySummary = await input.verifier.run(scanResult, buildRootPath, policy);
 
-      verifySummary = remediation.verifySummary;
-      remediationActions = remediation.actions;
-      const remediationArtifactPayload = (remediation.artifacts ?? []).find(
-        (artifact) => artifact.type === "remediation.json"
-      )?.data;
-      const remediationPayload = {
-        ...(typeof remediationArtifactPayload === "object" && remediationArtifactPayload !== null
-          ? remediationArtifactPayload
-          : {}),
-        ...remediation,
-        summary: {
-          changedFiles: remediation.summary?.changedFiles ?? 0,
-          changedLines: remediation.summary?.changedLines ?? 0,
-          rulesApplied: remediation.summary?.rulesApplied ?? [],
-          commitAfter: remediation.summary?.commitAfter ?? null
-        }
-      };
-      await input.evidenceWriter.write(runContext, "remediation.json", remediationPayload);
-      await input.evidenceWriter.write(runContext, "agentic-remediation.json", remediationPayload);
-      for (const artifact of remediation.artifacts ?? []) {
-        if (artifact.type === "remediation.json") {
-          continue;
-        }
-        await input.evidenceWriter.write(runContext, artifact.type, artifact.data);
-      }
-      if (applySummary && remediation.summary) {
-        applySummary = {
-          ...applySummary,
-          commitAfter: remediation.summary.commitAfter ?? applySummary.commitAfter,
-          remediation: {
-            changedFiles: remediation.summary.changedFiles,
-            changedLines: remediation.summary.changedLines,
-            rulesApplied: remediation.summary.rulesApplied
+      if (input.remediator) {
+        const remediation = input.remediator.appliesTo({
+          scan: scanResult,
+          verify: verifySummary,
+          policy
+        })
+          ? await input.remediator.run({
+              scan: scanResult,
+              verify: verifySummary,
+              repoPath: buildRootPath,
+              policy,
+              verifier: input.verifier
+            })
+          : {
+              applied: false,
+              actions: [
+                {
+                  action: "deterministic_remediation",
+                  status: "skipped" as const,
+                  reason: "Remediator not applicable"
+                }
+              ],
+              verifySummary,
+              reason: "not_applicable"
+            };
+
+        verifySummary = remediation.verifySummary;
+        remediationActions = remediation.actions;
+        const remediationArtifactPayload = (remediation.artifacts ?? []).find(
+          (artifact) => artifact.type === "remediation.json"
+        )?.data;
+        const remediationPayload = {
+          ...(typeof remediationArtifactPayload === "object" && remediationArtifactPayload !== null
+            ? remediationArtifactPayload
+            : {}),
+          ...remediation,
+          summary: {
+            changedFiles: remediation.summary?.changedFiles ?? 0,
+            changedLines: remediation.summary?.changedLines ?? 0,
+            rulesApplied: remediation.summary?.rulesApplied ?? [],
+            commitAfter: remediation.summary?.commitAfter ?? null
           }
         };
-        if (typeof remediation.summary.commitAfter === "string") {
-          commitAfter = remediation.summary.commitAfter;
+        await input.evidenceWriter.write(runContext, "remediation.json", remediationPayload);
+        await input.evidenceWriter.write(runContext, "agentic-remediation.json", remediationPayload);
+        for (const artifact of remediation.artifacts ?? []) {
+          if (artifact.type === "remediation.json") {
+            continue;
+          }
+          await input.evidenceWriter.write(runContext, artifact.type, artifact.data);
+        }
+        if (applySummary && remediation.summary) {
+          applySummary = {
+            ...applySummary,
+            commitAfter: remediation.summary.commitAfter ?? applySummary.commitAfter,
+            remediation: {
+              changedFiles: remediation.summary.changedFiles,
+              changedLines: remediation.summary.changedLines,
+              rulesApplied: remediation.summary.rulesApplied
+            }
+          };
+          if (typeof remediation.summary.commitAfter === "string") {
+            commitAfter = remediation.summary.commitAfter;
+          }
         }
       }
-    }
-    const budgetSignals = collectBudgetSignals(verifySummary);
-    for (const signal of budgetSignals) {
+      const budgetSignals = collectBudgetSignals(verifySummary);
+      for (const signal of budgetSignals) {
+        await emit({
+          eventType: "warning",
+          step: "verify",
+          message: "Budget guardrail triggered during verification",
+          payload: {
+            check: signal.check,
+            budgetKey: signal.budgetKey ?? "unknown",
+            limit: signal.limit ?? null,
+            observed: signal.observed ?? null,
+            actionTaken: "blocked"
+          }
+        });
+      }
       await emit({
-        eventType: "warning",
+        eventType: "step_end",
         step: "verify",
-        message: "Budget guardrail triggered during verification",
+        message: "Verifier stage complete",
         payload: {
-          check: signal.check,
-          budgetKey: signal.budgetKey ?? "unknown",
-          limit: signal.limit ?? null,
-          observed: signal.observed ?? null,
-          actionTaken: "blocked"
+          compile: verifySummary.compile.status,
+          tests: verifySummary.tests.status,
+          staticChecks: verifySummary.staticChecks.status
         }
       });
     }
-    await emit({
-      eventType: "step_end",
-      step: "verify",
-      message: "Verifier stage complete",
-      payload: {
-        compile: verifySummary.compile.status,
-        tests: verifySummary.tests.status,
-        staticChecks: verifySummary.staticChecks.status
-      }
-    });
   } else {
     if (input.mode === "apply" && planBlocking) {
       applySummary = {
@@ -527,7 +589,17 @@ export async function executeWorkflow(input: {
   await input.evidenceWriter.write(runContext, "verify.json", verifySummary);
 
   if (input.mode === "apply") {
-    policyDecisions.push(...policyEngine.evaluateVerify(verifySummary, policy));
+    if (guardedAndroidBaselineMode) {
+      policyDecisions.push({
+        id: "gradle_android_guarded_verify",
+        stage: "verify",
+        status: "warn",
+        reason: "Gradle Android baseline mode skips full verify; run remains needs_review for manual Android CI validation",
+        blocking: false
+      });
+    } else {
+      policyDecisions.push(...policyEngine.evaluateVerify(verifySummary, policy));
+    }
   }
 
   await input.evidenceWriter.write(runContext, "policy-decisions.json", policyDecisions);

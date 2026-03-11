@@ -157,6 +157,9 @@ export interface PolicyConfig {
       purgeLocalCache: boolean;
     };
   };
+  gradle?: {
+    allowAndroidBaselineApply: boolean;
+  };
   remediation?: {
     mavenCompile?: {
       enabled: boolean;
@@ -223,6 +226,7 @@ export interface PlanMetrics {
   selectedBuildRoot?: string | null;
   buildSystemDisposition?: BuildSystemDisposition;
   buildSystemReason?: string;
+  gradleProjectType?: GradleProjectType | null;
 }
 
 export interface VerifyAttempt {
