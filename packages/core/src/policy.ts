@@ -19,6 +19,7 @@ const ALL_FAILURE_KINDS: VerifyFailureKind[] = [
   "repo_unreachable",
   "budget_exceeded",
   "java17_plugin_incompat",
+  "java17_module_access_test_failure",
   "unknown"
 ];
 
@@ -39,7 +40,8 @@ const DEFAULT_POLICY: PolicyConfig = {
       "code_compile_failure",
       "code_test_failure",
       "code_failure",
-      "java17_plugin_incompat"
+      "java17_plugin_incompat",
+      "java17_module_access_test_failure"
     ],
     nonBlockingFailureKinds: [
       "tool_missing",
@@ -70,6 +72,15 @@ const DEFAULT_POLICY: PolicyConfig = {
         "ensure_lombok_annotation_processor_path",
         "remove_proc_none"
       ]
+    },
+    mavenTestRuntime: {
+      enabled: false,
+      maxIterations: 1,
+      maxFilesChangedPerIteration: 2,
+      maxLinesChangedPerIteration: 20,
+      maxFilesChangedTotal: 2,
+      maxLinesChangedTotal: 30,
+      allowedFixes: ["ensure_add_opens_sun_nio_ch"]
     }
   },
   confidenceThresholds: {
@@ -150,7 +161,8 @@ function deriveLegacyVerifyConfig(
         "code_compile_failure",
         "code_test_failure",
         "code_failure",
-        "java17_plugin_incompat"
+        "java17_plugin_incompat",
+        "java17_module_access_test_failure"
       ],
       nonBlockingFailureKinds: [
         "tool_missing",
@@ -226,7 +238,10 @@ function normalizePolicy(raw: unknown): PolicyConfig {
 
   const rawMavenCompileRemediation =
     (remediation?.mavenCompile as Record<string, unknown> | undefined) ?? undefined;
+  const rawMavenTestRuntimeRemediation =
+    (remediation?.mavenTestRuntime as Record<string, unknown> | undefined) ?? undefined;
   const defaultMavenCompileRemediation = DEFAULT_POLICY.remediation?.mavenCompile;
+  const defaultMavenTestRuntimeRemediation = DEFAULT_POLICY.remediation?.mavenTestRuntime;
   const normalizedMavenCompileRemediation =
     rawMavenCompileRemediation || defaultMavenCompileRemediation
       ? {
@@ -268,6 +283,48 @@ function normalizePolicy(raw: unknown): PolicyConfig {
                 "ensure_lombok_annotation_processor_path",
                 "remove_proc_none"
               ].includes(item);
+            }
+          )
+        }
+      : undefined;
+
+  const normalizedMavenTestRuntimeRemediation =
+    rawMavenTestRuntimeRemediation || defaultMavenTestRuntimeRemediation
+      ? {
+          enabled: asBoolean(
+            rawMavenTestRuntimeRemediation?.enabled,
+            defaultMavenTestRuntimeRemediation?.enabled ?? false
+          ),
+          maxIterations: asPositiveInt(
+            rawMavenTestRuntimeRemediation?.maxIterations,
+            defaultMavenTestRuntimeRemediation?.maxIterations ?? 1
+          ),
+          maxFilesChangedPerIteration: asPositiveInt(
+            rawMavenTestRuntimeRemediation?.maxFilesChangedPerIteration,
+            defaultMavenTestRuntimeRemediation?.maxFilesChangedPerIteration ?? 2
+          ),
+          maxLinesChangedPerIteration: asPositiveInt(
+            rawMavenTestRuntimeRemediation?.maxLinesChangedPerIteration,
+            defaultMavenTestRuntimeRemediation?.maxLinesChangedPerIteration ?? 20
+          ),
+          maxFilesChangedTotal: asPositiveInt(
+            rawMavenTestRuntimeRemediation?.maxFilesChangedTotal,
+            defaultMavenTestRuntimeRemediation?.maxFilesChangedTotal ?? 2
+          ),
+          maxLinesChangedTotal: asPositiveInt(
+            rawMavenTestRuntimeRemediation?.maxLinesChangedTotal,
+            defaultMavenTestRuntimeRemediation?.maxLinesChangedTotal ?? 30
+          ),
+          allowedFixes: asStringArray(
+            rawMavenTestRuntimeRemediation?.allowedFixes,
+            defaultMavenTestRuntimeRemediation?.allowedFixes ?? []
+          ).filter(
+            (
+              item
+            ): item is NonNullable<
+              NonNullable<PolicyConfig["remediation"]>["mavenTestRuntime"]
+            >["allowedFixes"][number] => {
+              return ["ensure_add_opens_sun_nio_ch"].includes(item);
             }
           )
         }
@@ -319,9 +376,14 @@ function normalizePolicy(raw: unknown): PolicyConfig {
       )
     },
     remediation:
-      normalizedMavenCompileRemediation
+      normalizedMavenCompileRemediation || normalizedMavenTestRuntimeRemediation
         ? {
-            mavenCompile: normalizedMavenCompileRemediation
+            ...(normalizedMavenCompileRemediation
+              ? { mavenCompile: normalizedMavenCompileRemediation }
+              : {}),
+            ...(normalizedMavenTestRuntimeRemediation
+              ? { mavenTestRuntime: normalizedMavenTestRuntimeRemediation }
+              : {})
           }
         : undefined,
     confidenceThresholds: {

@@ -558,3 +558,4 @@ export {
   MavenInfraDeterministicRemediator
 } from "./remediator.js";
 export { MavenCompileDeterministicRemediator } from "./compile-remediator.js";
+export { MavenTestRuntimeDeterministicRemediator } from "./test-runtime-remediator.js";

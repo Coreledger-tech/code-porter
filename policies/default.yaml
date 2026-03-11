@@ -18,6 +18,7 @@ verify:
     - code_test_failure
     - code_failure
     - java17_plugin_incompat
+    - java17_module_access_test_failure
   nonBlockingFailureKinds:
     - tool_missing
     - artifact_resolution
@@ -42,6 +43,15 @@ remediation:
       - ensure_maven_compiler_plugin_for_lombok
       - ensure_lombok_annotation_processor_path
       - remove_proc_none
+  mavenTestRuntime:
+    enabled: false
+    maxIterations: 1
+    maxFilesChangedPerIteration: 2
+    maxLinesChangedPerIteration: 20
+    maxFilesChangedTotal: 2
+    maxLinesChangedTotal: 30
+    allowedFixes:
+      - ensure_add_opens_sun_nio_ch
 confidenceThresholds:
   pass: 70
   needsReview: 55

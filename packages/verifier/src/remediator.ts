@@ -13,6 +13,7 @@ import type {
 import { isCachedResolutionFailure } from "./failure-classifier.js";
 import { runCommand } from "./commands.js";
 import { MavenCompileDeterministicRemediator } from "./compile-remediator.js";
+import { MavenTestRuntimeDeterministicRemediator } from "./test-runtime-remediator.js";
 
 function gatherFailureKinds(verify: VerifySummary): VerifyFailureKind[] {
   const kinds: VerifyFailureKind[] = [];
@@ -182,7 +183,8 @@ export class CompositeDeterministicRemediator implements DeterministicRemediator
   constructor(
     private readonly remediators: DeterministicRemediator[] = [
       new MavenInfraDeterministicRemediator(),
-      new MavenCompileDeterministicRemediator()
+      new MavenCompileDeterministicRemediator(),
+      new MavenTestRuntimeDeterministicRemediator()
     ]
   ) {}
 

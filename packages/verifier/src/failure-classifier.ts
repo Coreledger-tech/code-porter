@@ -41,6 +41,12 @@ const JAVA17_PLUGIN_INCOMPAT_PATTERNS = [
   /\bqualid\b/i
 ];
 
+const JAVA17_MODULE_ACCESS_PATTERNS = [
+  /sun\.nio\.ch\.filechannelimpl/i,
+  /module\s+java\.base\s+does\s+not\s+export\s+sun\.nio\.ch/i,
+  /java\.base\/sun\.nio\.ch/i
+];
+
 function matchesAny(text: string, patterns: RegExp[]): boolean {
   return patterns.some((pattern) => pattern.test(text));
 }
@@ -80,6 +86,15 @@ export function classifyVerifyFailure(
     matchesAny(text, JAVA17_PLUGIN_INCOMPAT_PATTERNS)
   ) {
     return "java17_plugin_incompat";
+  }
+
+  if (
+    context.phase === "tests" &&
+    /illegalaccesserror/i.test(text) &&
+    (matchesAny(text, JAVA17_MODULE_ACCESS_PATTERNS) ||
+      /sun\.nio\.ch\.filechannelimpl/i.test(text))
+  ) {
+    return "java17_module_access_test_failure";
   }
 
   if (
@@ -133,6 +148,13 @@ export function suggestRemediations(check: CheckResult): string[] {
       "Shift delombok execution out of compile/test path (prepare-package recommended).",
       "Keep Lombok dependency version unchanged unless a separate compile failure proves otherwise.",
       "Re-run verify after plugin lifecycle update."
+    ];
+  }
+
+  if (failureKind === "java17_module_access_test_failure") {
+    return [
+      "Add only the required module open to test JVM args: --add-opens=java.base/sun.nio.ch=ALL-UNNAMED.",
+      "Apply the change in existing surefire/failsafe plugin argLine blocks and rerun tests."
     ];
   }
 

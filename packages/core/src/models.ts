@@ -44,6 +44,7 @@ export type VerifyFailureKind =
   | "repo_unreachable"
   | "budget_exceeded"
   | "java17_plugin_incompat"
+  | "java17_module_access_test_failure"
   | "unknown";
 
 export interface Project {
@@ -173,6 +174,15 @@ export interface PolicyConfig {
         | "ensure_lombok_annotation_processor_path"
         | "remove_proc_none"
       >;
+    };
+    mavenTestRuntime?: {
+      enabled: boolean;
+      maxIterations: number;
+      maxFilesChangedPerIteration: number;
+      maxLinesChangedPerIteration: number;
+      maxFilesChangedTotal: number;
+      maxLinesChangedTotal: number;
+      allowedFixes: Array<"ensure_add_opens_sun_nio_ch">;
     };
   };
   confidenceThresholds: {
