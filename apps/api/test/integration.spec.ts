@@ -925,6 +925,7 @@ describe("API integration", () => {
     const run = await waitForRunTerminal<{
       status: string;
       summary: {
+        failureKind?: string;
         scan?: {
           selectedBuildSystem?: string;
           selectedBuildRoot?: string;
@@ -939,6 +940,9 @@ describe("API integration", () => {
     expect(run.summary.scan?.selectedBuildSystem).toBe("maven");
     expect(run.summary.scan?.selectedBuildRoot).toBe("my-app");
     expect(run.summary.scan?.selectedManifestPath).toBe("my-app/pom.xml");
+    if (run.status === "needs_review") {
+      expect(run.summary.failureKind).toBe("manual_review_required");
+    }
   });
 
   it("applies the lombok delombok compatibility pack and records the phase shift in evidence", async () => {
@@ -1493,7 +1497,7 @@ describe("API integration", () => {
     });
 
     expect(run.status).toBe("needs_review");
-    expect(run.summary.failureKind).toBeUndefined();
+    expect(run.summary.failureKind).toBe("guarded_baseline_applied");
     expect(run.summary.scan?.buildSystemDisposition).toBe("supported");
     expect(run.summary.scan?.gradleProjectType).toBe("android");
     expect(run.summary.scan?.buildSystemReason).toContain("baseline apply mode is enabled");
@@ -1617,7 +1621,7 @@ describe("API integration", () => {
 
       expect(run.status).toBe("needs_review");
       expect(run.prUrl).toBe("https://github.com/Coreledger-tech/code-porter/pull/987");
-      expect(run.summary.failureKind).toBeUndefined();
+      expect(run.summary.failureKind).toBe("guarded_baseline_applied");
       expect(run.summary.scan?.selectedBuildSystem).toBe("gradle");
       expect(run.summary.scan?.gradleProjectType).toBe("android");
       expect(run.summary.scan?.buildSystemDisposition).toBe("supported");

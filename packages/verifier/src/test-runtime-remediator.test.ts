@@ -220,4 +220,60 @@ describe("MavenTestRuntimeDeterministicRemediator", () => {
     expect(result.actions.some((action) => action.status === "skipped")).toBe(true);
     expect(verifier.run).not.toHaveBeenCalled();
   });
+
+  it("does not rewrite commented argLine content while adding active configuration", async () => {
+    const pom = [
+      "<project>",
+      "  <build>",
+      "    <plugins>",
+      "      <plugin>",
+      "        <groupId>org.apache.maven.plugins</groupId>",
+      "        <artifactId>maven-surefire-plugin</artifactId>",
+      "        <version>3.2.5</version>",
+      "        <configuration combine.self=\"override\">",
+      "          <!--<argLine>-XX:+PrintApplicationStoppedTime</argLine>-->",
+      "          <redirectTestOutputToFile>true</redirectTestOutputToFile>",
+      "        </configuration>",
+      "      </plugin>",
+      "    </plugins>",
+      "  </build>",
+      "</project>"
+    ].join("\n");
+
+    const repoPath = await createRepo(pom);
+    const verifier = {
+      run: vi.fn().mockResolvedValue({
+        ...moduleAccessFailure,
+        tests: {
+          status: "passed"
+        }
+      })
+    };
+
+    const result = await new MavenTestRuntimeDeterministicRemediator().run({
+      scan: {
+        buildSystem: "maven",
+        hasTests: true,
+        metadata: {
+          gitBranch: "main",
+          toolAvailability: { mvn: true, gradle: false, npm: false, node: true },
+          detectedFiles: ["pom.xml"]
+        }
+      },
+      verify: moduleAccessFailure,
+      repoPath,
+      policy: basePolicy,
+      verifier: verifier as any
+    });
+
+    const updatedPom = await readFile(join(repoPath, "pom.xml"), "utf8");
+    const configurationCount = (updatedPom.match(/<configuration\b/gi) ?? []).length;
+    expect(updatedPom).toContain("<!--<argLine>-XX:+PrintApplicationStoppedTime</argLine>-->");
+    expect(updatedPom).toContain("<argLine>--add-opens=java.base/sun.nio.ch=ALL-UNNAMED</argLine>");
+    expect(updatedPom).not.toContain(
+      "<!--<argLine>-XX:+PrintApplicationStoppedTime --add-opens=java.base/sun.nio.ch=ALL-UNNAMED</argLine>-->"
+    );
+    expect(configurationCount).toBe(1);
+    expect(result.summary?.rulesApplied).toContain("ensure_add_opens_sun_nio_ch");
+  });
 });
