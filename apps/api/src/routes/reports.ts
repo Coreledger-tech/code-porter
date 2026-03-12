@@ -103,6 +103,11 @@ export function reportsRouter(): Router {
       const { window, days } = parsed;
       const actionableMavenCondition = `coalesce(r.summary#>>'{scan,selectedBuildSystem}', 'unknown') = 'maven'
          and coalesce(r.summary#>>'{scan,buildSystemDisposition}', 'supported') = 'supported'`;
+      const normalizedFailureKindExpr = `coalesce(
+        nullif(r.summary->>'failureKind', ''),
+        case when r.status = 'completed' then null else 'manual_review_required' end,
+        'unknown'
+      )`;
       const cohortCondition =
         cohort === "all"
           ? "true"
@@ -131,22 +136,23 @@ export function reportsRouter(): Router {
           [days]
         ),
         query<FailureCountRow>(
-          `select coalesce(summary->>'failureKind', 'unknown') as failure_kind,
+          `select ${normalizedFailureKindExpr} as failure_kind,
                   count(*)::int as count
            from runs r
            where ${applyWindowFilter}
-           group by coalesce(summary->>'failureKind', 'unknown')
+             and r.status <> 'completed'
+           group by ${normalizedFailureKindExpr}
            order by count(*) desc
            limit 10`,
           [days]
         ),
         query<FailureCountRow>(
-          `select coalesce(summary->>'failureKind', 'unknown') as failure_kind,
+          `select ${normalizedFailureKindExpr} as failure_kind,
                   count(*)::int as count
            from runs r
            where ${applyWindowFilter}
              and r.status = 'blocked'
-           group by coalesce(summary->>'failureKind', 'unknown')
+           group by ${normalizedFailureKindExpr}
            order by count(*) desc
            limit 10`,
           [days]
@@ -238,7 +244,7 @@ export function reportsRouter(): Router {
       const offendersWithTopFailure = await Promise.all(
         offenders.rows.map(async (row) => {
           const topFailure = await query<TopFailureByProjectRow>(
-            `select coalesce(r.summary->>'failureKind', 'unknown') as failure_kind
+            `select ${normalizedFailureKindExpr} as failure_kind
              from runs r
              join campaigns c on c.id = r.campaign_id
              where c.project_id = $1
@@ -246,7 +252,7 @@ export function reportsRouter(): Router {
                and r.started_at >= now() - make_interval(days => $2)
                and (${cohortCondition})
                and r.status = 'blocked'
-             group by coalesce(r.summary->>'failureKind', 'unknown')
+             group by ${normalizedFailureKindExpr}
              order by count(*) desc
              limit 1`,
             [row.project_id, days]
