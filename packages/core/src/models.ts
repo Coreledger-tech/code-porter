@@ -184,7 +184,9 @@ export interface PolicyConfig {
       maxLinesChangedPerIteration: number;
       maxFilesChangedTotal: number;
       maxLinesChangedTotal: number;
-      allowedFixes: Array<"ensure_add_opens_sun_nio_ch" | "ensure_add_opens_java_nio">;
+      allowedFixes: Array<
+        "ensure_add_opens_sun_nio_ch" | "ensure_add_opens_java_nio" | "ensure_add_opens_java_lang"
+      >;
     };
   };
   confidenceThresholds: {

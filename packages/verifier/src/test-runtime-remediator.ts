@@ -65,6 +65,11 @@ const RULE_CONFIG: Record<
     jvmOpen: "--add-opens=java.base/java.nio=ALL-UNNAMED",
     description:
       "Added minimal Java 17 module-open for java.nio reflective access in Chronicle test runtime"
+  },
+  ensure_add_opens_java_lang: {
+    jvmOpen: "--add-opens=java.base/java.lang=ALL-UNNAMED",
+    description:
+      "Added minimal Java 17 module-open for java.lang reflective access in Chronicle test runtime"
   }
 };
 
@@ -76,6 +81,13 @@ const SUN_NIO_CH_SIGNATURES = [
 
 const CHRONICLE_JAVA_NIO_SIGNATURES = [
   /nosuchfieldexception:\s*address/i,
+  /net\.openhft\.chronicle/i
+];
+
+const CHRONICLE_JAVA_LANG_SIGNATURES = [
+  /inaccessibleobjectexception/i,
+  /module\s+java\.base\s+does\s+not\s+"?opens\s+java\.lang"?/i,
+  /java\.lang\.throwable\.detailmessage/i,
   /net\.openhft\.chronicle/i
 ];
 
@@ -262,6 +274,9 @@ function detectRequiredRuleIds(verify: VerifySummary): AllowedFix[] {
   if (CHRONICLE_JAVA_NIO_SIGNATURES.every((pattern) => pattern.test(text))) {
     required.push("ensure_add_opens_java_nio");
   }
+  if (CHRONICLE_JAVA_LANG_SIGNATURES.every((pattern) => pattern.test(text))) {
+    required.push("ensure_add_opens_java_lang");
+  }
   return required;
 }
 
@@ -387,7 +402,7 @@ export class MavenTestRuntimeDeterministicRemediator implements DeterministicRem
           status: "skipped",
           reason:
             requiredRuleIds.length === 0
-              ? "No Stage 8 module-access signature matched allowed deterministic runtime fixes"
+              ? "No module-access signature matched allowed deterministic runtime fixes"
               : "No applicable surefire/failsafe plugin block found for add-opens remediation"
         });
         break;

@@ -52,6 +52,13 @@ const CHRONICLE_JAVA17_REFLECTIVE_ACCESS_PATTERNS = [
   /net\.openhft\.chronicle/i
 ];
 
+const CHRONICLE_JAVA17_JAVA_LANG_ACCESS_PATTERNS = [
+  /inaccessibleobjectexception/i,
+  /module\s+java\.base\s+does\s+not\s+"?opens\s+java\.lang"?/i,
+  /java\.lang\.throwable\.detailmessage/i,
+  /net\.openhft\.chronicle/i
+];
+
 function matchesAny(text: string, patterns: RegExp[]): boolean {
   return patterns.some((pattern) => pattern.test(text));
 }
@@ -96,7 +103,8 @@ export function classifyVerifyFailure(
   if (
     context.phase === "tests" &&
     ((/illegalaccesserror/i.test(text) && matchesAny(text, JAVA17_MODULE_ACCESS_PATTERNS)) ||
-      CHRONICLE_JAVA17_REFLECTIVE_ACCESS_PATTERNS.every((pattern) => pattern.test(text)))
+      CHRONICLE_JAVA17_REFLECTIVE_ACCESS_PATTERNS.every((pattern) => pattern.test(text)) ||
+      CHRONICLE_JAVA17_JAVA_LANG_ACCESS_PATTERNS.every((pattern) => pattern.test(text)))
   ) {
     return "java17_module_access_test_failure";
   }
@@ -159,6 +167,7 @@ export function suggestRemediations(check: CheckResult): string[] {
     return [
       "Add only the required module open to test JVM args: --add-opens=java.base/sun.nio.ch=ALL-UNNAMED.",
       "For Chronicle NoSuchFieldException(address) failures, add --add-opens=java.base/java.nio=ALL-UNNAMED.",
+      "For Chronicle InaccessibleObjectException(detailMessage) failures, add --add-opens=java.base/java.lang=ALL-UNNAMED.",
       "Apply the change in existing surefire/failsafe plugin argLine blocks and rerun tests."
     ];
   }
