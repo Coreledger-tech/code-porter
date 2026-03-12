@@ -98,6 +98,8 @@ describe("reportsRouter", () => {
       projectId: "p1",
       topFailureKind: "code_compile_failure"
     });
+    expect(queryMock.mock.calls[1]?.[0]).toContain("and r.status <> 'completed'");
+    expect(queryMock.mock.calls[1]?.[0]).toContain("manual_review_required");
   });
 
   it("rejects unsupported window", async () => {

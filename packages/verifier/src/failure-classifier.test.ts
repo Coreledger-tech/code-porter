@@ -187,11 +187,52 @@ describe("failure classifier", () => {
     expect(kind).toBe("java17_module_access_test_failure");
   });
 
+  it("classifies Chronicle InaccessibleObjectException(detailMessage) as module access", () => {
+    const kind = classifyVerifyFailure(
+      {
+        status: "failed",
+        output: [
+          "java.lang.ExceptionInInitializerError",
+          "Caused by: java.lang.reflect.InaccessibleObjectException: Unable to make field private java.lang.String java.lang.Throwable.detailMessage accessible",
+          "module java.base does not \"opens java.lang\" to unnamed module",
+          "at net.openhft.chronicle.wire.WireInternal.<clinit>(WireInternal.java:52)"
+        ].join("\n")
+      },
+      {
+        buildSystem: "maven",
+        command: "mvn",
+        phase: "tests"
+      }
+    );
+
+    expect(kind).toBe("java17_module_access_test_failure");
+  });
+
   it("does not classify unrelated NoSuchFieldException as module access", () => {
     const kind = classifyVerifyFailure(
       {
         status: "failed",
         output: "java.lang.NoSuchFieldException: address at com.example.project.SomeClass"
+      },
+      {
+        buildSystem: "maven",
+        command: "mvn",
+        phase: "tests"
+      }
+    );
+
+    expect(kind).toBe("code_test_failure");
+  });
+
+  it("does not classify non-Chronicle opens java.lang failure as module access", () => {
+    const kind = classifyVerifyFailure(
+      {
+        status: "failed",
+        output: [
+          "java.lang.reflect.InaccessibleObjectException",
+          "module java.base does not \"opens java.lang\" to unnamed module",
+          "java.lang.Throwable.detailMessage"
+        ].join("\n")
       },
       {
         buildSystem: "maven",

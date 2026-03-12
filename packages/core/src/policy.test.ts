@@ -35,6 +35,9 @@ describe("YamlPolicyEngine", () => {
     expect(policy.remediation?.mavenTestRuntime?.allowedFixes).toContain(
       "ensure_add_opens_java_nio"
     );
+    expect(policy.remediation?.mavenTestRuntime?.allowedFixes).toContain(
+      "ensure_add_opens_java_lang"
+    );
     expect(policy.confidenceThresholds.pass).toBe(70);
   });
 
@@ -223,7 +226,8 @@ describe("YamlPolicyEngine", () => {
     expect(policy.remediation?.mavenTestRuntime?.enabled).toBe(true);
     expect(policy.remediation?.mavenTestRuntime?.allowedFixes).toEqual([
       "ensure_add_opens_sun_nio_ch",
-      "ensure_add_opens_java_nio"
+      "ensure_add_opens_java_nio",
+      "ensure_add_opens_java_lang"
     ]);
   });
 });

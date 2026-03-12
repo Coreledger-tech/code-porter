@@ -2075,6 +2075,127 @@ describe("API integration", () => {
     }
   });
 
+  it("applies java.lang add-opens remediation for Chronicle detailMessage reflective-access signatures", async () => {
+    const repoPath = await prepareMavenTestRuntimeRepo({
+      repoName: "code-porter-int-maven-test-runtime-chronicle-java-lang-signature"
+    });
+    cleanupPaths.push(repoPath);
+
+    const fakeBin = await mkdtemp(
+      join(tmpdir(), "code-porter-fake-mvn-runtime-chronicle-java-lang-")
+    );
+    cleanupPaths.push(fakeBin);
+    const mvnScript = join(fakeBin, "mvn");
+    await writeFile(
+      mvnScript,
+      [
+        "#!/bin/sh",
+        "set -eu",
+        "ARGS=\"$*\"",
+        "if echo \"$ARGS\" | grep -q \"dependency:resolve-plugins\"; then",
+        "  exit 0",
+        "fi",
+        "if echo \"$ARGS\" | grep -q -- \"-DskipTests compile\"; then",
+        "  exit 0",
+        "fi",
+        "if echo \"$ARGS\" | grep -q \" test\"; then",
+        "  if grep -q -- \"--add-opens=java.base/java.lang=ALL-UNNAMED\" pom.xml; then",
+        "    echo \"tests ok\"",
+        "    exit 0",
+        "  fi",
+        "  echo \"java.lang.ExceptionInInitializerError\"",
+        "  echo \"Caused by: java.lang.reflect.InaccessibleObjectException: Unable to make field private java.lang.String java.lang.Throwable.detailMessage accessible\"",
+        "  echo \"module java.base does not \\\"opens java.lang\\\" to unnamed module\"",
+        "  echo \"at net.openhft.chronicle.wire.WireInternal.<clinit>(WireInternal.java:52)\"",
+        "  exit 1",
+        "fi",
+        "exit 0"
+      ].join("\n"),
+      "utf8"
+    );
+    await execFileAsync("chmod", ["+x", mvnScript]);
+
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${fakeBin}:${originalPath ?? ""}`;
+
+    try {
+      const project = await apiFetch<{ id: string }>(baseUrl, "/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "integration-maven-test-runtime-chronicle-java-lang",
+          localPath: repoPath
+        })
+      });
+
+      const campaign = await apiFetch<{ id: string }>(baseUrl, "/campaigns", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: project.id,
+          policyId: "pilot-stage8",
+          recipePack: "java-maven-test-compat-stage8-pack"
+        })
+      });
+
+      const applyStart = await apiFetch<{ runId: string; status: string }>(
+        baseUrl,
+        `/campaigns/${campaign.id}/apply`,
+        { method: "POST" }
+      );
+
+      const run = await waitForRunTerminal<{
+        status: string;
+        evidencePath: string;
+        evidenceArtifacts: Array<{ type: string; path: string }>;
+        summary: {
+          applySummary?: {
+            remediation?: {
+              rulesApplied?: string[];
+            };
+          };
+          failureKind?: string;
+        };
+      }>({
+        baseUrl,
+        runId: applyStart.runId,
+        timeoutMs: 2 * 60 * 1000
+      });
+
+      expect(["completed", "needs_review"]).toContain(run.status);
+      expect(run.summary.applySummary?.remediation?.rulesApplied).toContain(
+        "ensure_add_opens_java_lang"
+      );
+      expect(run.summary.failureKind).not.toBe("java17_module_access_test_failure");
+
+      const verifyArtifact = JSON.parse(
+        await readFile(
+          findArtifactPath(
+            run.evidenceArtifacts,
+            "verify.json",
+            join(run.evidencePath, "verify.json")
+          ),
+          "utf8"
+        )
+      ) as { tests: { status: string } };
+      expect(verifyArtifact.tests.status).toBe("passed");
+
+      const remediationArtifact = JSON.parse(
+        await readFile(
+          findArtifactPath(
+            run.evidenceArtifacts,
+            "remediation-test-runtime.json",
+            join(run.evidencePath, "remediation-test-runtime.json")
+          ),
+          "utf8"
+        )
+      ) as { iterations?: Array<{ ruleId?: string }> };
+      expect(remediationArtifact.iterations?.[0]?.ruleId).toBe("ensure_add_opens_java_lang");
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
+
   it("writes retrieval context evidence on verify failures when semantic retrieval is enabled", async () => {
     const repoPath = await prepareMavenTestRuntimeRepo({
       repoName: "code-porter-int-semantic-retrieval"

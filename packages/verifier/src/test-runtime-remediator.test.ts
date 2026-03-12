@@ -49,7 +49,11 @@ const basePolicy: PolicyConfig = {
       maxLinesChangedPerIteration: 20,
       maxFilesChangedTotal: 2,
       maxLinesChangedTotal: 30,
-      allowedFixes: ["ensure_add_opens_sun_nio_ch", "ensure_add_opens_java_nio"]
+      allowedFixes: [
+        "ensure_add_opens_sun_nio_ch",
+        "ensure_add_opens_java_nio",
+        "ensure_add_opens_java_lang"
+      ]
     }
   },
   confidenceThresholds: {
@@ -86,6 +90,27 @@ const chronicleModuleAccessFailure: VerifySummary = {
     failureKind: "java17_module_access_test_failure",
     output:
       "java.lang.NoSuchFieldException: address at net.openhft.chronicle.bytes.internal.NativeBytesStore"
+  },
+  staticChecks: {
+    status: "passed"
+  }
+};
+
+const chronicleJavaLangModuleAccessFailure: VerifySummary = {
+  buildSystem: "maven",
+  hasTests: true,
+  compile: {
+    status: "passed"
+  },
+  tests: {
+    status: "failed",
+    failureKind: "java17_module_access_test_failure",
+    output: [
+      "java.lang.ExceptionInInitializerError",
+      "Caused by: java.lang.reflect.InaccessibleObjectException: Unable to make field private java.lang.String java.lang.Throwable.detailMessage accessible:",
+      "module java.base does not \"opens java.lang\" to unnamed module",
+      "at net.openhft.chronicle.wire.WireInternal.<clinit>(WireInternal.java:52)"
+    ].join("\n")
   },
   staticChecks: {
     status: "passed"
@@ -285,6 +310,94 @@ describe("MavenTestRuntimeDeterministicRemediator", () => {
     );
     expect(result.summary?.rulesApplied).toContain("ensure_add_opens_java_nio");
     expect(result.summary?.rulesApplied).not.toContain("ensure_add_opens_sun_nio_ch");
+  });
+
+  it("adds java.lang open for Chronicle detailMessage reflective-access signatures", async () => {
+    const pom = [
+      "<project>",
+      "  <build>",
+      "    <plugins>",
+      "      <plugin>",
+      "        <groupId>org.apache.maven.plugins</groupId>",
+      "        <artifactId>maven-surefire-plugin</artifactId>",
+      "        <version>3.2.5</version>",
+      "      </plugin>",
+      "    </plugins>",
+      "  </build>",
+      "</project>"
+    ].join("\n");
+
+    const repoPath = await createRepo(pom);
+    const verifier = {
+      run: vi.fn().mockResolvedValue({
+        ...chronicleJavaLangModuleAccessFailure,
+        tests: {
+          status: "passed"
+        }
+      })
+    };
+
+    const result = await new MavenTestRuntimeDeterministicRemediator().run({
+      scan: {
+        buildSystem: "maven",
+        hasTests: true,
+        metadata: {
+          gitBranch: "main",
+          toolAvailability: { mvn: true, gradle: false, npm: false, node: true },
+          detectedFiles: ["pom.xml"]
+        }
+      },
+      verify: chronicleJavaLangModuleAccessFailure,
+      repoPath,
+      policy: basePolicy,
+      verifier: verifier as any
+    });
+
+    const updatedPom = await readFile(join(repoPath, "pom.xml"), "utf8");
+    expect(updatedPom).toContain(
+      "<argLine>--add-opens=java.base/java.lang=ALL-UNNAMED</argLine>"
+    );
+    expect(result.summary?.rulesApplied).toContain("ensure_add_opens_java_lang");
+    expect(result.summary?.rulesApplied).not.toContain("ensure_add_opens_java_nio");
+  });
+
+  it("is idempotent when java.lang add-opens is already present", async () => {
+    const pom = [
+      "<project>",
+      "  <build>",
+      "    <plugins>",
+      "      <plugin>",
+      "        <artifactId>maven-surefire-plugin</artifactId>",
+      "        <configuration>",
+      "          <argLine>--add-opens=java.base/java.lang=ALL-UNNAMED</argLine>",
+      "        </configuration>",
+      "      </plugin>",
+      "    </plugins>",
+      "  </build>",
+      "</project>"
+    ].join("\n");
+    const repoPath = await createRepo(pom);
+    const verifier = { run: vi.fn() };
+
+    const result = await new MavenTestRuntimeDeterministicRemediator().run({
+      scan: {
+        buildSystem: "maven",
+        hasTests: true,
+        metadata: {
+          gitBranch: "main",
+          toolAvailability: { mvn: true, gradle: false, npm: false, node: true },
+          detectedFiles: ["pom.xml"]
+        }
+      },
+      verify: chronicleJavaLangModuleAccessFailure,
+      repoPath,
+      policy: basePolicy,
+      verifier: verifier as any
+    });
+
+    expect(result.applied).toBe(false);
+    expect(result.actions.some((action) => action.status === "skipped")).toBe(true);
+    expect(verifier.run).not.toHaveBeenCalled();
   });
 
   it("does not rewrite commented argLine content while adding active configuration", async () => {
