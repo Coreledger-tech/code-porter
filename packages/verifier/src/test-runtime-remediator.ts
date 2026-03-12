@@ -44,8 +44,25 @@ type FixCandidate = {
   description: string;
 };
 
-function findPluginBlocks(content: string): string[] {
-  return content.match(/<plugin>[\s\S]*?<\/plugin>/g) ?? [];
+type PluginBlockMatch = {
+  block: string;
+  start: number;
+  end: number;
+};
+
+function findPluginBlocks(content: string): PluginBlockMatch[] {
+  const matches: PluginBlockMatch[] = [];
+  const regex = /<plugin>[\s\S]*?<\/plugin>/g;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(content)) !== null) {
+    matches.push({
+      block: match[0],
+      start: match.index,
+      end: match.index + match[0].length
+    });
+  }
+
+  return matches;
 }
 
 function pluginArtifactId(pluginBlock: string): string | null {
@@ -53,37 +70,88 @@ function pluginArtifactId(pluginBlock: string): string | null {
   return match?.[1]?.trim() ?? null;
 }
 
+function withMaskedXmlComments(input: string): {
+  masked: string;
+  restore: (value: string) => string;
+} {
+  const comments: string[] = [];
+  const masked = input.replace(/<!--[\s\S]*?-->/g, (comment) => {
+    const index = comments.push(comment) - 1;
+    return `__CODE_PORTER_XML_COMMENT_${index}__`;
+  });
+
+  return {
+    masked,
+    restore: (value: string) =>
+      value.replace(/__CODE_PORTER_XML_COMMENT_(\d+)__/g, (_, idx: string) => {
+        const index = Number(idx);
+        return comments[index] ?? "";
+      })
+  };
+}
+
+function upsertArgLineInConfiguration(configurationBlock: string): {
+  changed: boolean;
+  updated: string;
+} {
+  const { masked, restore } = withMaskedXmlComments(configurationBlock);
+  const argLineMatch = masked.match(/<argLine>([\s\S]*?)<\/argLine>/i);
+
+  if (argLineMatch) {
+    const [fullMatch, argLineContent] = argLineMatch;
+    if (argLineContent.includes(JAVA17_OPEN)) {
+      return { changed: false, updated: configurationBlock };
+    }
+
+    const trimmed = argLineContent.trim();
+    const nextValue = trimmed.length > 0 ? `${trimmed} ${JAVA17_OPEN}` : JAVA17_OPEN;
+    const updatedMasked = masked.replace(fullMatch, `<argLine>${nextValue}</argLine>`);
+    return {
+      changed: true,
+      updated: restore(updatedMasked)
+    };
+  }
+
+  const closeTagMatch = masked.match(/\n([ \t]*)<\/configuration>/i);
+  const closeTagIndent = closeTagMatch?.[1] ?? "  ";
+  const argLineIndent = `${closeTagIndent}  `;
+  const updatedMasked = masked.replace(
+    /<\/configuration>/i,
+    `\n${argLineIndent}<argLine>${JAVA17_OPEN}</argLine>\n${closeTagIndent}</configuration>`
+  );
+
+  return {
+    changed: updatedMasked !== masked,
+    updated: restore(updatedMasked)
+  };
+}
+
 function updatePluginArgLine(pluginBlock: string): {
   changed: boolean;
   updated: string;
 } {
-  if (/<argLine>[\s\S]*?<\/argLine>/i.test(pluginBlock)) {
-    const updated = pluginBlock.replace(
-      /<argLine>([\s\S]*?)<\/argLine>/i,
-      (match, content: string) => {
-        if (content.includes(JAVA17_OPEN)) {
-          return match;
-        }
-        const trimmed = content.trim();
-        const next = trimmed.length > 0 ? `${trimmed} ${JAVA17_OPEN}` : JAVA17_OPEN;
-        return `<argLine>${next}</argLine>`;
-      }
+  if (/<configuration\b[^>]*>[\s\S]*?<\/configuration>/i.test(pluginBlock)) {
+    const configurationMatch = pluginBlock.match(
+      /<configuration\b[^>]*>[\s\S]*?<\/configuration>/i
     );
-    return { changed: updated !== pluginBlock, updated };
+    if (!configurationMatch) {
+      return { changed: false, updated: pluginBlock };
+    }
+
+    const nextConfiguration = upsertArgLineInConfiguration(configurationMatch[0]);
+    if (!nextConfiguration.changed) {
+      return { changed: false, updated: pluginBlock };
+    }
+
+    return {
+      changed: true,
+      updated: pluginBlock.replace(configurationMatch[0], nextConfiguration.updated)
+    };
   }
 
   const pluginIndent = pluginBlock.match(/^(\s*)<plugin>/m)?.[1] ?? "      ";
   const configurationIndent = `${pluginIndent}  `;
   const argLineIndent = `${configurationIndent}  `;
-
-  if (/<configuration>[\s\S]*?<\/configuration>/i.test(pluginBlock)) {
-    const updated = pluginBlock.replace(
-      /<\/configuration>/i,
-      `${argLineIndent}<argLine>${JAVA17_OPEN}</argLine>\n${configurationIndent}</configuration>`
-    );
-    return { changed: updated !== pluginBlock, updated };
-  }
-
   const configurationBlock = [
     `${configurationIndent}<configuration>`,
     `${argLineIndent}<argLine>${JAVA17_OPEN}</argLine>`,
@@ -102,32 +170,42 @@ function ensureModuleAccessOpenInPom(pom: string): FixCandidate | null {
     return null;
   }
 
-  let updatedPom = pom;
-  const touchedPlugins: string[] = [];
-  for (const block of blocks) {
-    const artifactId = pluginArtifactId(block);
+  let updatedPom = "";
+  let cursor = 0;
+  const touchedPlugins = new Set<string>();
+
+  for (const blockMatch of blocks) {
+    updatedPom += pom.slice(cursor, blockMatch.start);
+    const artifactId = pluginArtifactId(blockMatch.block);
     if (!artifactId || !TARGET_PLUGINS.includes(artifactId as (typeof TARGET_PLUGINS)[number])) {
+      updatedPom += blockMatch.block;
+      cursor = blockMatch.end;
       continue;
     }
 
-    const updatedBlock = updatePluginArgLine(block);
+    const updatedBlock = updatePluginArgLine(blockMatch.block);
     if (!updatedBlock.changed) {
+      updatedPom += blockMatch.block;
+      cursor = blockMatch.end;
       continue;
     }
 
-    updatedPom = updatedPom.replace(block, updatedBlock.updated);
-    touchedPlugins.push(artifactId);
+    updatedPom += updatedBlock.updated;
+    touchedPlugins.add(artifactId);
+    cursor = blockMatch.end;
   }
 
-  if (updatedPom === pom) {
+  updatedPom += pom.slice(cursor);
+
+  if (updatedPom === pom || touchedPlugins.size === 0) {
     return null;
   }
 
   return {
     ruleId: "ensure_add_opens_sun_nio_ch",
     updatedPom,
-    touchedPlugins,
-    description: `Added minimal Java 17 module-open argLine for ${touchedPlugins.join(", ")}`
+    touchedPlugins: [...touchedPlugins],
+    description: `Added minimal Java 17 module-open argLine for ${[...touchedPlugins].join(", ")}`
   };
 }
 
