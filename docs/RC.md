@@ -17,6 +17,9 @@
 - ensure host worker and pr-poller are stopped, or run integration in compose-only mode.
 - stop command:
   - `/bin/zsh -lc 'pkill -f "apps/api/src/worker.ts" || true; pkill -f "apps/api/src/pr-poller.ts" || true'`
+9. Keeper PR preflight:
+- for each pilot repo with multiple open PRs in the release window, choose one keeper PR and close superseded PRs before release.
+- merge only keeper PRs that satisfy the merge checklist in this document.
 
 ## Exact RC Commands
 ```bash
@@ -44,6 +47,24 @@ docker pull --platform linux/amd64 ghcr.io/coreledger-tech/code-porter:v1.0.0-rc
 echo "$GITHUB_TOKEN" | docker login ghcr.io -u <github-user> --password-stdin
 docker pull ghcr.io/coreledger-tech/code-porter:v1.0.0-rc.2
 ```
+
+## Keeper PR Convention
+1. Keep exactly one active modernization PR per repository in a given pilot window.
+2. Close superseded PRs with a deterministic reason comment (for example `superseded by #16`).
+3. Use squash merge for keeper PRs.
+
+## Merge Checklist
+1. Diff scope guardrails:
+- only files expected for the lane/pack are touched.
+- no unplanned plugin insertion or broad dependency sweep.
+2. Churn guardrails:
+- changed files and changed lines remain within policy limits and pilot guardrails.
+3. Evidence guardrails:
+- `verify.json` exists and reflects terminal state.
+- remediation artifacts exist when remediation was applied (`remediation*.json` and patch artifacts).
+- terminal failure-kind mapping matches final verify phase (compile vs tests).
+4. Parseability guardrails:
+- XML/Gradle files remain parseable after deterministic patching.
 
 ## Fresh Clone Compose Smoke Test
 ```bash

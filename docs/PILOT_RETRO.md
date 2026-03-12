@@ -327,6 +327,18 @@ This section is intentionally pre-execution and contains expected outcomes only.
 3. Android Gradle repos with `allowAndroidBaselineApply=true` should follow guarded baseline path with explicit guarded reasoning, avoiding opaque unsupported-subtype outcomes.
 4. Optional semantic retrieval should produce `evidence/context/retrieval.json` on verify failures without changing terminal run semantics.
 
+## Stage 8 Expected Deltas
+This section is intentionally pre-execution and contains expected outcomes only.
+
+1. Axum should no longer terminate as generic `code_test_failure` when Chronicle Java 17 reflective-access signatures are present; deterministic test-runtime remediation should apply minimal JVM opens and rerun verify.
+2. `/reports/pilot` should support cohort views:
+   - `all` for full apply-mode pilot runs,
+   - `actionable_maven` for supported Maven lane metrics,
+   - `coverage` for excluded/guarded/other-lane outcomes.
+3. Top failure kinds in actionable cohort should reflect true modernization blockers rather than unsupported-lane noise.
+4. Retrieval experiment for Axum-only failures should emit `context/retrieval.json` with sanitized content and no status/failure-kind side effects.
+5. Keeper PR convention should reduce multi-PR drift by enforcing one active keeper PR per repo window.
+
 ## Stage 5 Expected Deltas
 This section is intentionally pre-execution and contains expected outcomes only.
 

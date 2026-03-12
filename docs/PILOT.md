@@ -125,6 +125,12 @@ Use the deterministic pilot script for a full 5-repo run.
 3. Fill [PILOT_RETRO_TEMPLATE.md](/Users/kelvinmusodza/Downloads/Code porter/docs/PILOT_RETRO_TEMPLATE.md).
 4. Capture prioritized pack proposals and assign owners for next sprint.
 
+## PR Keeper Loop
+1. Keep only one active keeper PR per repo per pilot wave.
+2. If multiple PRs exist, select the keeper with the cleanest in-scope diff and latest valid evidence.
+3. Close superseded PRs with explicit references to the keeper.
+4. Merge only when the keeper satisfies the RC merge checklist (diff scope, churn limits, evidence integrity, and classifier consistency).
+
 ## v1.0.0 Exit Criteria
 Pilot exits to v1.0.0 when all targets are met over the last 30 days:
 
