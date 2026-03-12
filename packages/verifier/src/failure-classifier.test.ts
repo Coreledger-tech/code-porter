@@ -170,6 +170,39 @@ describe("failure classifier", () => {
     expect(kind).toBe("code_test_failure");
   });
 
+  it("classifies Chronicle NoSuchFieldException(address) test runtime failures", () => {
+    const kind = classifyVerifyFailure(
+      {
+        status: "failed",
+        output:
+          "java.lang.NoSuchFieldException: address at net.openhft.chronicle.bytes.internal.NativeBytesStore"
+      },
+      {
+        buildSystem: "maven",
+        command: "mvn",
+        phase: "tests"
+      }
+    );
+
+    expect(kind).toBe("java17_module_access_test_failure");
+  });
+
+  it("does not classify unrelated NoSuchFieldException as module access", () => {
+    const kind = classifyVerifyFailure(
+      {
+        status: "failed",
+        output: "java.lang.NoSuchFieldException: address at com.example.project.SomeClass"
+      },
+      {
+        buildSystem: "maven",
+        command: "mvn",
+        phase: "tests"
+      }
+    );
+
+    expect(kind).toBe("code_test_failure");
+  });
+
   it("detects cached resolution signal", () => {
     expect(
       isCachedResolutionFailure({

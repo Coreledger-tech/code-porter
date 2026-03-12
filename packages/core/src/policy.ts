@@ -80,7 +80,7 @@ const DEFAULT_POLICY: PolicyConfig = {
       maxLinesChangedPerIteration: 20,
       maxFilesChangedTotal: 2,
       maxLinesChangedTotal: 30,
-      allowedFixes: ["ensure_add_opens_sun_nio_ch"]
+      allowedFixes: ["ensure_add_opens_sun_nio_ch", "ensure_add_opens_java_nio"]
     }
   },
   confidenceThresholds: {
@@ -324,7 +324,9 @@ function normalizePolicy(raw: unknown): PolicyConfig {
             ): item is NonNullable<
               NonNullable<PolicyConfig["remediation"]>["mavenTestRuntime"]
             >["allowedFixes"][number] => {
-              return ["ensure_add_opens_sun_nio_ch"].includes(item);
+              return ["ensure_add_opens_sun_nio_ch", "ensure_add_opens_java_nio"].includes(
+                item
+              );
             }
           )
         }

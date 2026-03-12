@@ -49,7 +49,7 @@ const basePolicy: PolicyConfig = {
       maxLinesChangedPerIteration: 20,
       maxFilesChangedTotal: 2,
       maxLinesChangedTotal: 30,
-      allowedFixes: ["ensure_add_opens_sun_nio_ch"]
+      allowedFixes: ["ensure_add_opens_sun_nio_ch", "ensure_add_opens_java_nio"]
     }
   },
   confidenceThresholds: {
@@ -69,6 +69,23 @@ const moduleAccessFailure: VerifySummary = {
     failureKind: "java17_module_access_test_failure",
     output:
       "java.lang.IllegalAccessError: class org.apache.lucene.store.MMapDirectory cannot access class sun.nio.ch.FileChannelImpl"
+  },
+  staticChecks: {
+    status: "passed"
+  }
+};
+
+const chronicleModuleAccessFailure: VerifySummary = {
+  buildSystem: "maven",
+  hasTests: true,
+  compile: {
+    status: "passed"
+  },
+  tests: {
+    status: "failed",
+    failureKind: "java17_module_access_test_failure",
+    output:
+      "java.lang.NoSuchFieldException: address at net.openhft.chronicle.bytes.internal.NativeBytesStore"
   },
   staticChecks: {
     status: "passed"
@@ -219,6 +236,55 @@ describe("MavenTestRuntimeDeterministicRemediator", () => {
     expect(result.applied).toBe(false);
     expect(result.actions.some((action) => action.status === "skipped")).toBe(true);
     expect(verifier.run).not.toHaveBeenCalled();
+  });
+
+  it("adds java.nio open for Chronicle reflective-access signatures", async () => {
+    const pom = [
+      "<project>",
+      "  <build>",
+      "    <plugins>",
+      "      <plugin>",
+      "        <groupId>org.apache.maven.plugins</groupId>",
+      "        <artifactId>maven-surefire-plugin</artifactId>",
+      "        <version>3.2.5</version>",
+      "      </plugin>",
+      "    </plugins>",
+      "  </build>",
+      "</project>"
+    ].join("\n");
+
+    const repoPath = await createRepo(pom);
+    const verifier = {
+      run: vi.fn().mockResolvedValue({
+        ...chronicleModuleAccessFailure,
+        tests: {
+          status: "passed"
+        }
+      })
+    };
+
+    const result = await new MavenTestRuntimeDeterministicRemediator().run({
+      scan: {
+        buildSystem: "maven",
+        hasTests: true,
+        metadata: {
+          gitBranch: "main",
+          toolAvailability: { mvn: true, gradle: false, npm: false, node: true },
+          detectedFiles: ["pom.xml"]
+        }
+      },
+      verify: chronicleModuleAccessFailure,
+      repoPath,
+      policy: basePolicy,
+      verifier: verifier as any
+    });
+
+    const updatedPom = await readFile(join(repoPath, "pom.xml"), "utf8");
+    expect(updatedPom).toContain(
+      "<argLine>--add-opens=java.base/java.nio=ALL-UNNAMED</argLine>"
+    );
+    expect(result.summary?.rulesApplied).toContain("ensure_add_opens_java_nio");
+    expect(result.summary?.rulesApplied).not.toContain("ensure_add_opens_sun_nio_ch");
   });
 
   it("does not rewrite commented argLine content while adding active configuration", async () => {

@@ -261,6 +261,10 @@ function buildJavaMavenTestCompatV2Recipes(): Recipe[] {
   ];
 }
 
+function buildJavaMavenTestCompatStage8Recipes(): Recipe[] {
+  return buildJavaMavenTestCompatV2Recipes();
+}
+
 function buildJavaGradleJava17BaselineRecipes(): Recipe[] {
   return [new GradleWrapperJava17MinRecipe(), new GradleJava17BaselineRecipe()];
 }
@@ -276,6 +280,7 @@ const RECIPE_PACK_FACTORIES: Record<string, () => Recipe[]> = {
   "java-maven-lombok-delombok-compat-pack": buildJavaMavenLombokDelombokCompatRecipes,
   "java-maven-test-compat-pack": buildJavaMavenTestCompatRecipes,
   "java-maven-test-compat-v2-pack": buildJavaMavenTestCompatV2Recipes,
+  "java-maven-test-compat-stage8-pack": buildJavaMavenTestCompatStage8Recipes,
   "java-gradle-java17-baseline-pack": buildJavaGradleJava17BaselineRecipes,
   "java-gradle-guarded-baseline-pack": buildJavaGradleGuardedBaselineRecipes
 };

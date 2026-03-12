@@ -32,6 +32,9 @@ describe("YamlPolicyEngine", () => {
     expect(policy.gradle?.allowAndroidBaselineApply).toBe(false);
     expect(policy.remediation?.mavenCompile?.enabled).toBe(false);
     expect(policy.remediation?.mavenTestRuntime?.enabled).toBe(false);
+    expect(policy.remediation?.mavenTestRuntime?.allowedFixes).toContain(
+      "ensure_add_opens_java_nio"
+    );
     expect(policy.confidenceThresholds.pass).toBe(70);
   });
 
@@ -208,6 +211,19 @@ describe("YamlPolicyEngine", () => {
     expect(policy.remediation?.mavenTestRuntime?.enabled).toBe(true);
     expect(policy.remediation?.mavenTestRuntime?.allowedFixes).toEqual([
       "ensure_add_opens_sun_nio_ch"
+    ]);
+  });
+
+  it("parses stage8 Chronicle test-runtime remediation controls", async () => {
+    const engine = new YamlPolicyEngine();
+    const policy = await engine.load(resolve(process.cwd(), "policies/pilot-stage8.yaml"));
+
+    expect(policy.defaultRecipePack).toBe("java-maven-test-compat-stage8-pack");
+    expect(policy.gradle?.allowAndroidBaselineApply).toBe(true);
+    expect(policy.remediation?.mavenTestRuntime?.enabled).toBe(true);
+    expect(policy.remediation?.mavenTestRuntime?.allowedFixes).toEqual([
+      "ensure_add_opens_sun_nio_ch",
+      "ensure_add_opens_java_nio"
     ]);
   });
 });

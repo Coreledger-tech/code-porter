@@ -184,7 +184,7 @@ export interface PolicyConfig {
       maxLinesChangedPerIteration: number;
       maxFilesChangedTotal: number;
       maxLinesChangedTotal: number;
-      allowedFixes: Array<"ensure_add_opens_sun_nio_ch">;
+      allowedFixes: Array<"ensure_add_opens_sun_nio_ch" | "ensure_add_opens_java_nio">;
     };
   };
   confidenceThresholds: {
@@ -341,6 +341,12 @@ export interface PilotWorstOffender {
 
 export interface PilotReport {
   window: "7d" | "30d";
+  cohort: "all" | "actionable_maven" | "coverage";
+  cohortCounts: {
+    totalApplyRuns: number;
+    cohortApplyRuns: number;
+    excludedApplyRuns: number;
+  };
   generatedAt: string;
   totalsByStatus: Record<string, number>;
   topFailureKinds: Array<{ failureKind: string; count: number }>;

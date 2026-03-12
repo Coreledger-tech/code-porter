@@ -54,6 +54,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
         "java-maven-lombok-delombok-compat-pack",
         "java-maven-test-compat-pack",
         "java-maven-test-compat-v2-pack",
+        "java-maven-test-compat-stage8-pack",
         "java-gradle-java17-baseline-pack",
         "java-gradle-guarded-baseline-pack"
       ]),
@@ -226,6 +227,7 @@ describe("campaignsRouter", () => {
         "java-maven-lombok-delombok-compat-pack",
         "java-maven-test-compat-pack",
         "java-maven-test-compat-v2-pack",
+        "java-maven-test-compat-stage8-pack",
         "java-gradle-java17-baseline-pack",
         "java-gradle-guarded-baseline-pack"
       ],

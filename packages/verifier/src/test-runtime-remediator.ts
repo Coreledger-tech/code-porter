@@ -17,7 +17,6 @@ import type {
 } from "@code-porter/core/src/workflow-runner.js";
 
 const execFileAsync = promisify(execFile);
-const JAVA17_OPEN = "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED";
 const TARGET_PLUGINS = ["maven-surefire-plugin", "maven-failsafe-plugin"] as const;
 
 type AllowedFix =
@@ -49,6 +48,36 @@ type PluginBlockMatch = {
   start: number;
   end: number;
 };
+
+const RULE_CONFIG: Record<
+  AllowedFix,
+  {
+    jvmOpen: string;
+    description: string;
+  }
+> = {
+  ensure_add_opens_sun_nio_ch: {
+    jvmOpen: "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
+    description:
+      "Added minimal Java 17 module-open for sun.nio.ch reflective access in test runtime"
+  },
+  ensure_add_opens_java_nio: {
+    jvmOpen: "--add-opens=java.base/java.nio=ALL-UNNAMED",
+    description:
+      "Added minimal Java 17 module-open for java.nio reflective access in Chronicle test runtime"
+  }
+};
+
+const SUN_NIO_CH_SIGNATURES = [
+  /sun\.nio\.ch\.filechannelimpl/i,
+  /module\s+java\.base\s+does\s+not\s+export\s+sun\.nio\.ch/i,
+  /java\.base\/sun\.nio\.ch/i
+];
+
+const CHRONICLE_JAVA_NIO_SIGNATURES = [
+  /nosuchfieldexception:\s*address/i,
+  /net\.openhft\.chronicle/i
+];
 
 function findPluginBlocks(content: string): PluginBlockMatch[] {
   const matches: PluginBlockMatch[] = [];
@@ -90,7 +119,10 @@ function withMaskedXmlComments(input: string): {
   };
 }
 
-function upsertArgLineInConfiguration(configurationBlock: string): {
+function upsertArgLineInConfiguration(
+  configurationBlock: string,
+  requiredJvmOpen: string
+): {
   changed: boolean;
   updated: string;
 } {
@@ -99,12 +131,13 @@ function upsertArgLineInConfiguration(configurationBlock: string): {
 
   if (argLineMatch) {
     const [fullMatch, argLineContent] = argLineMatch;
-    if (argLineContent.includes(JAVA17_OPEN)) {
+    if (argLineContent.includes(requiredJvmOpen)) {
       return { changed: false, updated: configurationBlock };
     }
 
     const trimmed = argLineContent.trim();
-    const nextValue = trimmed.length > 0 ? `${trimmed} ${JAVA17_OPEN}` : JAVA17_OPEN;
+    const nextValue =
+      trimmed.length > 0 ? `${trimmed} ${requiredJvmOpen}` : requiredJvmOpen;
     const updatedMasked = masked.replace(fullMatch, `<argLine>${nextValue}</argLine>`);
     return {
       changed: true,
@@ -117,7 +150,7 @@ function upsertArgLineInConfiguration(configurationBlock: string): {
   const argLineIndent = `${closeTagIndent}  `;
   const updatedMasked = masked.replace(
     /<\/configuration>/i,
-    `\n${argLineIndent}<argLine>${JAVA17_OPEN}</argLine>\n${closeTagIndent}</configuration>`
+    `\n${argLineIndent}<argLine>${requiredJvmOpen}</argLine>\n${closeTagIndent}</configuration>`
   );
 
   return {
@@ -126,7 +159,7 @@ function upsertArgLineInConfiguration(configurationBlock: string): {
   };
 }
 
-function updatePluginArgLine(pluginBlock: string): {
+function updatePluginArgLine(pluginBlock: string, requiredJvmOpen: string): {
   changed: boolean;
   updated: string;
 } {
@@ -138,7 +171,10 @@ function updatePluginArgLine(pluginBlock: string): {
       return { changed: false, updated: pluginBlock };
     }
 
-    const nextConfiguration = upsertArgLineInConfiguration(configurationMatch[0]);
+    const nextConfiguration = upsertArgLineInConfiguration(
+      configurationMatch[0],
+      requiredJvmOpen
+    );
     if (!nextConfiguration.changed) {
       return { changed: false, updated: pluginBlock };
     }
@@ -154,7 +190,7 @@ function updatePluginArgLine(pluginBlock: string): {
   const argLineIndent = `${configurationIndent}  `;
   const configurationBlock = [
     `${configurationIndent}<configuration>`,
-    `${argLineIndent}<argLine>${JAVA17_OPEN}</argLine>`,
+    `${argLineIndent}<argLine>${requiredJvmOpen}</argLine>`,
     `${configurationIndent}</configuration>`
   ].join("\n");
   const updated = pluginBlock.replace(
@@ -164,7 +200,8 @@ function updatePluginArgLine(pluginBlock: string): {
   return { changed: updated !== pluginBlock, updated };
 }
 
-function ensureModuleAccessOpenInPom(pom: string): FixCandidate | null {
+function ensureModuleAccessOpenInPom(pom: string, ruleId: AllowedFix): FixCandidate | null {
+  const requiredJvmOpen = RULE_CONFIG[ruleId].jvmOpen;
   const blocks = findPluginBlocks(pom);
   if (blocks.length === 0) {
     return null;
@@ -183,7 +220,7 @@ function ensureModuleAccessOpenInPom(pom: string): FixCandidate | null {
       continue;
     }
 
-    const updatedBlock = updatePluginArgLine(blockMatch.block);
+    const updatedBlock = updatePluginArgLine(blockMatch.block, requiredJvmOpen);
     if (!updatedBlock.changed) {
       updatedPom += blockMatch.block;
       cursor = blockMatch.end;
@@ -202,11 +239,30 @@ function ensureModuleAccessOpenInPom(pom: string): FixCandidate | null {
   }
 
   return {
-    ruleId: "ensure_add_opens_sun_nio_ch",
+    ruleId,
     updatedPom,
     touchedPlugins: [...touchedPlugins],
-    description: `Added minimal Java 17 module-open argLine for ${[...touchedPlugins].join(", ")}`
+    description: `${RULE_CONFIG[ruleId].description} via ${[...touchedPlugins].join(", ")}`
   };
+}
+
+function combinedTestFailureText(verify: VerifySummary): string {
+  return `${verify.tests.reason ?? ""}\n${verify.tests.output ?? ""}`;
+}
+
+function detectRequiredRuleIds(verify: VerifySummary): AllowedFix[] {
+  const text = combinedTestFailureText(verify);
+  const required: AllowedFix[] = [];
+  const hasSunNioChSignature =
+    /illegalaccesserror/i.test(text) &&
+    SUN_NIO_CH_SIGNATURES.some((pattern) => pattern.test(text));
+  if (hasSunNioChSignature) {
+    required.push("ensure_add_opens_sun_nio_ch");
+  }
+  if (CHRONICLE_JAVA_NIO_SIGNATURES.every((pattern) => pattern.test(text))) {
+    required.push("ensure_add_opens_java_nio");
+  }
+  return required;
 }
 
 function countPatchChangedLines(patch: string): number {
@@ -318,12 +374,21 @@ export class MavenTestRuntimeDeterministicRemediator implements DeterministicRem
       }
 
       const beforePom = await readFile(pomPath, "utf8");
-      const candidate = ensureModuleAccessOpenInPom(beforePom);
-      if (!candidate || !config.allowedFixes.includes(candidate.ruleId)) {
+      const requiredRuleIds = detectRequiredRuleIds(verifySummary).filter((ruleId) =>
+        config.allowedFixes.includes(ruleId)
+      );
+      const candidate =
+        requiredRuleIds
+          .map((ruleId) => ensureModuleAccessOpenInPom(beforePom, ruleId))
+          .find((value): value is FixCandidate => Boolean(value)) ?? null;
+      if (!candidate) {
         actions.push({
           action: "maven_test_runtime_remediation",
           status: "skipped",
-          reason: "No applicable surefire/failsafe plugin block found for add-opens remediation"
+          reason:
+            requiredRuleIds.length === 0
+              ? "No Stage 8 module-access signature matched allowed deterministic runtime fixes"
+              : "No applicable surefire/failsafe plugin block found for add-opens remediation"
         });
         break;
       }

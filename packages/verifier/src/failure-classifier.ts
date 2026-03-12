@@ -47,6 +47,11 @@ const JAVA17_MODULE_ACCESS_PATTERNS = [
   /java\.base\/sun\.nio\.ch/i
 ];
 
+const CHRONICLE_JAVA17_REFLECTIVE_ACCESS_PATTERNS = [
+  /nosuchfieldexception:\s*address/i,
+  /net\.openhft\.chronicle/i
+];
+
 function matchesAny(text: string, patterns: RegExp[]): boolean {
   return patterns.some((pattern) => pattern.test(text));
 }
@@ -90,9 +95,8 @@ export function classifyVerifyFailure(
 
   if (
     context.phase === "tests" &&
-    /illegalaccesserror/i.test(text) &&
-    (matchesAny(text, JAVA17_MODULE_ACCESS_PATTERNS) ||
-      /sun\.nio\.ch\.filechannelimpl/i.test(text))
+    ((/illegalaccesserror/i.test(text) && matchesAny(text, JAVA17_MODULE_ACCESS_PATTERNS)) ||
+      CHRONICLE_JAVA17_REFLECTIVE_ACCESS_PATTERNS.every((pattern) => pattern.test(text)))
   ) {
     return "java17_module_access_test_failure";
   }
@@ -154,6 +158,7 @@ export function suggestRemediations(check: CheckResult): string[] {
   if (failureKind === "java17_module_access_test_failure") {
     return [
       "Add only the required module open to test JVM args: --add-opens=java.base/sun.nio.ch=ALL-UNNAMED.",
+      "For Chronicle NoSuchFieldException(address) failures, add --add-opens=java.base/java.nio=ALL-UNNAMED.",
       "Apply the change in existing surefire/failsafe plugin argLine blocks and rerun tests."
     ];
   }
