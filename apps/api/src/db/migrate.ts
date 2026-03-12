@@ -38,6 +38,53 @@ async function ensureRunStatusConstraint(): Promise<void> {
   );
 }
 
+async function backfillRecentFailureKinds(): Promise<void> {
+  await dbPool.query(
+    `update runs
+     set summary = jsonb_set(
+       coalesce(summary, '{}'::jsonb),
+       '{failureKind}',
+       to_jsonb('guarded_baseline_applied'::text),
+       true
+     )
+     where started_at >= now() - make_interval(days => 7)
+       and status = 'needs_review'
+       and coalesce(summary->>'failureKind', '') = ''
+       and coalesce(summary->>'guardedBaselineReason', '') <> ''`
+  );
+
+  await dbPool.query(
+    `update runs
+     set summary = jsonb_set(
+       coalesce(summary, '{}'::jsonb),
+       '{failureKind}',
+       to_jsonb('unsupported_build_system'::text),
+       true
+     )
+     where started_at >= now() - make_interval(days => 7)
+       and status = 'needs_review'
+       and coalesce(summary->>'failureKind', '') = ''
+       and coalesce(summary#>>'{scan,buildSystemDisposition}', '') in (
+         'excluded_by_policy',
+         'unsupported_subtype',
+         'no_supported_manifest'
+       )`
+  );
+
+  await dbPool.query(
+    `update runs
+     set summary = jsonb_set(
+       coalesce(summary, '{}'::jsonb),
+       '{failureKind}',
+       to_jsonb('manual_review_required'::text),
+       true
+     )
+     where started_at >= now() - make_interval(days => 7)
+       and status = 'needs_review'
+       and coalesce(summary->>'failureKind', '') = ''`
+  );
+}
+
 async function ensureCampaignLifecycleShape(): Promise<void> {
   await dbPool.query(
     `alter table if exists campaigns
@@ -423,6 +470,7 @@ export async function runMigrations(): Promise<void> {
   await ensureRunEventsShape();
   await ensureEvidenceArtifactsShape();
   await ensureRunStatusConstraint();
+  await backfillRecentFailureKinds();
 
   const policyPath = process.env.POLICY_DEFAULT_PATH ?? "./policies/default.yaml";
 
