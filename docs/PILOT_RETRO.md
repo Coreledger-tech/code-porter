@@ -536,3 +536,69 @@ This section is intentionally pre-execution and contains expected outcomes only.
 - Module-access remediator can trigger on test-runtime signature, and terminal classification now reflects final verify phase (`code_test_failure` here).
 3. Merge signal is now visible in pilot reporting.
 - 7d report now has `merged=1` and non-null time-to-green from merged Axum PR `#19`.
+
+## Stage 8 Results
+- Stage 8 cohort artifact: `/Users/kelvinmusodza/Downloads/Code porter/evidence/pilot/2026-03-12T02-47-35-554Z/pilot-summary.json`
+- Stage 8 report snapshots:
+  - `/tmp/pilot-report-stage8-all.json`
+  - `/tmp/pilot-report-stage8-actionable.json`
+  - `/tmp/pilot-report-stage8-coverage.json`
+- Policy ID: `pilot-stage8`
+- Maven pack: `java-maven-test-compat-stage8-pack`
+- Gradle pack: `java-gradle-guarded-baseline-pack`
+
+### Targeted Gates (Pre-Cohort)
+1. Axum targeted apply gate
+- runId: `30fadee6-756b-4c99-9d28-8e8e8ba501d7`
+- status: `needs_review`
+- failureKind: `code_test_failure`
+- remediation evidence:
+  - `/Users/kelvinmusodza/Downloads/Code porter/evidence/61afa147-9a90-48df-ad66-c8dd16360be7/676b8f0b-e86b-4b3f-be16-5c24aee4d4eb/30fadee6-756b-4c99-9d28-8e8e8ba501d7/remediation-test-runtime.json`
+  - `/Users/kelvinmusodza/Downloads/Code porter/evidence/61afa147-9a90-48df-ad66-c8dd16360be7/676b8f0b-e86b-4b3f-be16-5c24aee4d4eb/30fadee6-756b-4c99-9d28-8e8e8ba501d7/artifacts/remediation-test-runtime-1.patch`
+- remediation rule applied: `ensure_add_opens_java_nio`
+- PR opened: `https://github.com/Coreledger-tech/Axum-matching-engine/pull/20`
+
+2. Android targeted guarded-baseline gate
+- runId: `4b72a871-6d39-4542-9077-e8ee0ad1ddb9`
+- status: `needs_review`
+- failureKind: `guarded_baseline_applied`
+- scan metadata: `selectedBuildSystem=gradle`, `gradleProjectType=android`, `buildSystemDisposition=supported`
+- guarded reason: `Guarded Android baseline apply mode skips Gradle task execution; run full Android CI outside Code Porter before merge`
+- PR outcome: none in this run (`changedFiles=0`, deterministic baseline already applied)
+
+### Full 5-Repo Cohort Rerun (Stage 8)
+| repo | planRunId | applyRunId | applyStatus | applyFailureKind | prUrl |
+| --- | --- | --- | --- | --- | --- |
+| Java-Web-Crawler | `3cb951b8-bd1e-4122-8f8f-9a2b97ce09da` | `d626c757-27d4-444c-990b-9493a519ec72` | `completed` |  |  |
+| Axum-matching-engine | `96e211e1-e372-4121-a9f7-4c6f2ac380ea` | `066c6dc5-7388-48e4-a2f4-22fbc2cf8c15` | `needs_review` | `code_test_failure` | `https://github.com/Coreledger-tech/Axum-matching-engine/pull/21` |
+| authelia-TOTP | `20669884-93df-45f1-83b3-d92bc1501000` | `177a6dc7-65f5-432e-8ebf-2700fda9d26d` | `needs_review` | `unsupported_build_system` |  |
+| Exception-handling-reconciliation | `69912e5f-925c-4275-810c-7ce434a37c66` | `438b4c85-0ade-47a3-8c47-4d9d4432fc89` | `needs_review` | `unsupported_build_system` |  |
+| android-ESP-32-bluetooth-arduino | `f346eea4-2c5e-4395-b776-cde03abaabd2` | `0438d8c6-807f-48b2-a044-3ec71b48488b` | `needs_review` | `guarded_baseline_applied` |  |
+
+### Stage 8 Cohort-Split Metrics (`window=7d`)
+1. `cohort=all`
+- totalsByStatus: `completed=1`, `needs_review=7`
+- topFailureKinds: `code_test_failure=3`, `guarded_baseline_applied=2`, `unsupported_build_system=2`, `unknown=1`
+- prOutcomes: `opened=2`, `merged=0`, `open=2`, `mergeRate=0`
+
+2. `cohort=actionable_maven`
+- totalsByStatus: `completed=1`, `needs_review=3`
+- topFailureKinds: `code_test_failure=3`, `unknown=1`
+- prOutcomes: `opened=2`, `merged=0`, `open=2`, `mergeRate=0`
+
+3. `cohort=coverage`
+- totalsByStatus: `needs_review=4`
+- topFailureKinds: `guarded_baseline_applied=2`, `unsupported_build_system=2`
+- prOutcomes: `opened=0`, `merged=0`
+
+### Stage 8 Delta Assessment
+1. Axum Chronicle remediator path is evidenced and deterministic.
+- Runtime remediation applied `ensure_add_opens_java_nio` and produced a narrow patch to existing surefire/failsafe `argLine`.
+- Terminal failure remained `code_test_failure` due a subsequent reflective-access test issue (`java.base` `opens java.lang`), not the original Chronicle signature.
+
+2. Cohort reporting split is operational and usable.
+- `actionable_maven` cleanly isolates modernization lane runs.
+- Unsupported/guarded noise is isolated in `coverage` instead of dominating actionable metrics.
+
+3. Android guarded baseline semantics remain explicit and non-opaque.
+- Stage 8 Android runs classify as `supported` Gradle Android with `failureKind=guarded_baseline_applied` and explicit guarded reason.
