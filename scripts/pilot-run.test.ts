@@ -52,6 +52,12 @@ function createMockPilotApi() {
 
   const reportPayload = {
     window: "30d",
+    cohort: "all",
+    cohortCounts: {
+      totalApplyRuns: 10,
+      cohortApplyRuns: 10,
+      excludedApplyRuns: 0
+    },
     generatedAt: "2026-02-26T08:00:00.000Z",
     totalsByStatus: {
       completed: 3,
@@ -257,6 +263,29 @@ function createMockPilotApi() {
     }
 
     if (method === "GET" && path === "/reports/pilot") {
+      const cohort = url.searchParams.get("cohort") ?? "all";
+      if (cohort === "actionable_maven") {
+        return jsonResponse({
+          ...reportPayload,
+          cohort: "actionable_maven",
+          cohortCounts: {
+            totalApplyRuns: 10,
+            cohortApplyRuns: 6,
+            excludedApplyRuns: 4
+          }
+        });
+      }
+      if (cohort === "coverage") {
+        return jsonResponse({
+          ...reportPayload,
+          cohort: "coverage",
+          cohortCounts: {
+            totalApplyRuns: 10,
+            cohortApplyRuns: 4,
+            excludedApplyRuns: 6
+          }
+        });
+      }
       return jsonResponse(reportPayload);
     }
 
@@ -336,6 +365,9 @@ describe("pilot-run script", () => {
     expect(result.repos[4].apply.buildSystemDisposition).toBe("unsupported_subtype");
     expect(result.repos[4].apply.gradleProjectType).toBe("android");
     expect(result.ghcrVerificationMode).toBe("public");
+    expect(result.reportSnapshots.actionableMaven.cohort).toBe("actionable_maven");
+    expect(result.reportSnapshots.coverage.cohort).toBe("coverage");
+    expect(result.reportSnapshot.cohort).toBe("all");
     expect(mockApi.campaignBodies[0]?.targetSelector).toBe("main");
     expect(mockApi.campaignBodies[1]?.targetSelector).toBe("main");
 
@@ -411,6 +443,12 @@ describe("pilot-run script", () => {
     const recommendations = buildPilotRecommendations({
       report: {
         window: "30d",
+        cohort: "all",
+        cohortCounts: {
+          totalApplyRuns: 10,
+          cohortApplyRuns: 10,
+          excludedApplyRuns: 0
+        },
         generatedAt: "2026-02-26T08:00:00.000Z",
         totalsByStatus: {},
         topFailureKinds: [

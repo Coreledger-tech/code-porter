@@ -69,15 +69,22 @@ describe("reportsRouter", () => {
       .mockResolvedValueOnce({
         rows: [{ project_id: "p1", project_name: "demo", total_runs: 8, blocked_runs: 2, blocked_rate: 0.25 }]
       })
+      .mockResolvedValueOnce({ rows: [{ total_apply_runs: 12, cohort_apply_runs: 8 }] })
       .mockResolvedValueOnce({ rows: [{ failure_kind: "code_compile_failure" }] });
 
     const handler = findRouteHandler(reportsRouter(), "get", "/reports/pilot");
     const res = createMockRes();
 
-    await handler({ query: { window: "30d" } }, res, vi.fn());
+    await handler({ query: { window: "30d", cohort: "actionable_maven" } }, res, vi.fn());
 
     expect(res.statusCode).toBe(200);
     expect((res.body as any).window).toBe("30d");
+    expect((res.body as any).cohort).toBe("actionable_maven");
+    expect((res.body as any).cohortCounts).toEqual({
+      totalApplyRuns: 12,
+      cohortApplyRuns: 8,
+      excludedApplyRuns: 4
+    });
     expect((res.body as any).totalsByStatus.completed).toBe(6);
     expect((res.body as any).topFailureKinds[0]).toEqual({
       failureKind: "code_compile_failure",
@@ -102,6 +109,19 @@ describe("reportsRouter", () => {
     expect(res.statusCode).toBe(400);
     expect(res.body).toEqual({
       error: "invalid window, expected one of: 7d, 30d"
+    });
+    expect(queryMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects unsupported cohort", async () => {
+    const handler = findRouteHandler(reportsRouter(), "get", "/reports/pilot");
+    const res = createMockRes();
+
+    await handler({ query: { window: "7d", cohort: "bad" } }, res, vi.fn());
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toEqual({
+      error: "invalid cohort, expected one of: all, actionable_maven, coverage"
     });
     expect(queryMock).not.toHaveBeenCalled();
   });

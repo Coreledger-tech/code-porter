@@ -6,6 +6,21 @@ import type {
 
 type CoreModule = Record<string, unknown>;
 
+const RETRIEVAL_REDACTION_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
+  { pattern: /ghp_[A-Za-z0-9]{20,}/g, replacement: "ghp_[REDACTED]" },
+  { pattern: /github_pat_[A-Za-z0-9_]{20,}/g, replacement: "github_pat_[REDACTED]" },
+  { pattern: /Bearer\s+[A-Za-z0-9._~+/=-]{16,}/gi, replacement: "Bearer [REDACTED]" },
+  { pattern: /AKIA[0-9A-Z]{16}/g, replacement: "AKIA[REDACTED]" }
+];
+
+function sanitizeText(value: string): string {
+  let sanitized = value;
+  for (const { pattern, replacement } of RETRIEVAL_REDACTION_PATTERNS) {
+    sanitized = sanitized.replace(pattern, replacement);
+  }
+  return sanitized;
+}
+
 function clampTopK(value: number): number {
   if (!Number.isFinite(value) || value <= 0) {
     return 5;
@@ -86,9 +101,13 @@ function asHits(value: unknown): SemanticRetrievalHit[] {
     }
     const reason = typeof typed.reason === "string" ? typed.reason : undefined;
     if (reason) {
-      hits.push({ filePath, score, reason });
+      hits.push({
+        filePath: sanitizeText(filePath),
+        score,
+        reason: sanitizeText(reason)
+      });
     } else {
-      hits.push({ filePath, score });
+      hits.push({ filePath: sanitizeText(filePath), score });
     }
   }
   return hits;
@@ -149,7 +168,7 @@ export class NoopSemanticRetrievalProvider implements SemanticRetrievalProvider 
     return {
       provider: "noop",
       topK: clampTopK(input.topK),
-      query: extractFailureQuery({ verify: input.verify }),
+      query: sanitizeText(extractFailureQuery({ verify: input.verify })),
       hits: []
     };
   }
@@ -177,7 +196,7 @@ export class ClaudeContextSemanticRetrievalProvider implements SemanticRetrieval
     input: Parameters<SemanticRetrievalProvider["retrieve"]>[0]
   ): Promise<SemanticRetrievalResult> {
     const topK = clampTopK(this.options.topK ?? input.topK);
-    const query = extractFailureQuery({ verify: input.verify });
+    const query = sanitizeText(extractFailureQuery({ verify: input.verify }));
     const core = await this.loadCore();
 
     const retrieveFn = [
@@ -238,7 +257,11 @@ export class ClaudeContextSemanticRetrievalProvider implements SemanticRetrieval
       provider: "claude_context",
       topK,
       query,
-      hits: hits.slice(0, topK)
+      hits: hits.slice(0, topK).map((hit) => ({
+        filePath: sanitizeText(hit.filePath),
+        score: hit.score,
+        ...(hit.reason ? { reason: sanitizeText(hit.reason) } : {})
+      }))
     };
   }
 }

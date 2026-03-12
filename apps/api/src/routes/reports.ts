@@ -41,6 +41,13 @@ interface TopFailureByProjectRow {
   failure_kind: string;
 }
 
+interface CohortCountRow {
+  total_apply_runs: number;
+  cohort_apply_runs: number;
+}
+
+type PilotCohort = "all" | "actionable_maven" | "coverage";
+
 function parseWindow(
   raw: string | string[] | undefined
 ): { window: "7d" | "30d"; days: number } | null {
@@ -53,6 +60,17 @@ function parseWindow(
     return { window: "7d", days: 7 };
   }
 
+  return null;
+}
+
+function parseCohort(raw: string | string[] | undefined): PilotCohort | null {
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  if (!value || value === "all") {
+    return "all";
+  }
+  if (value === "actionable_maven" || value === "coverage") {
+    return value;
+  }
   return null;
 }
 
@@ -75,8 +93,25 @@ export function reportsRouter(): Router {
           error: "invalid window, expected one of: 7d, 30d"
         });
       }
+      const cohort = parseCohort(req.query.cohort as string | string[] | undefined);
+      if (!cohort) {
+        return res.status(400).json({
+          error: "invalid cohort, expected one of: all, actionable_maven, coverage"
+        });
+      }
 
       const { window, days } = parsed;
+      const actionableMavenCondition = `coalesce(r.summary#>>'{scan,selectedBuildSystem}', 'unknown') = 'maven'
+         and coalesce(r.summary#>>'{scan,buildSystemDisposition}', 'supported') = 'supported'`;
+      const cohortCondition =
+        cohort === "all"
+          ? "true"
+          : cohort === "actionable_maven"
+            ? actionableMavenCondition
+            : `not (${actionableMavenCondition})`;
+      const applyWindowFilter = `r.mode = 'apply'
+         and r.started_at >= now() - make_interval(days => $1)
+         and (${cohortCondition})`;
 
       const [
         statuses,
@@ -85,20 +120,21 @@ export function reportsRouter(): Router {
         prOutcomes,
         timeToGreen,
         retryRate,
-        offenders
+        offenders,
+        cohortCounts
       ] = await Promise.all([
         query<StatusCountRow>(
           `select status, count(*)::int as count
-           from runs
-           where started_at >= now() - make_interval(days => $1)
+           from runs r
+           where ${applyWindowFilter}
            group by status`,
           [days]
         ),
         query<FailureCountRow>(
           `select coalesce(summary->>'failureKind', 'unknown') as failure_kind,
                   count(*)::int as count
-           from runs
-           where started_at >= now() - make_interval(days => $1)
+           from runs r
+           where ${applyWindowFilter}
            group by coalesce(summary->>'failureKind', 'unknown')
            order by count(*) desc
            limit 10`,
@@ -107,9 +143,9 @@ export function reportsRouter(): Router {
         query<FailureCountRow>(
           `select coalesce(summary->>'failureKind', 'unknown') as failure_kind,
                   count(*)::int as count
-           from runs
-           where started_at >= now() - make_interval(days => $1)
-             and status = 'blocked'
+           from runs r
+           where ${applyWindowFilter}
+             and r.status = 'blocked'
            group by coalesce(summary->>'failureKind', 'unknown')
            order by count(*) desc
            limit 10`,
@@ -117,12 +153,12 @@ export function reportsRouter(): Router {
         ),
         query<PrOutcomesRow>(
           `select
-             (count(*) filter (where pr_url is not null))::int as opened,
-             (count(*) filter (where pr_state = 'merged'))::int as merged,
-             (count(*) filter (where pr_state = 'closed'))::int as closed_unmerged,
-             (count(*) filter (where pr_state = 'open'))::int as open
-           from runs
-           where started_at >= now() - make_interval(days => $1)`,
+             (count(*) filter (where r.pr_url is not null))::int as opened,
+             (count(*) filter (where r.pr_state = 'merged'))::int as merged,
+             (count(*) filter (where r.pr_state = 'closed'))::int as closed_unmerged,
+             (count(*) filter (where r.pr_state = 'open'))::int as open
+           from runs r
+           where ${applyWindowFilter}`,
           [days]
         ),
         query<TimeToGreenRow>(
@@ -134,10 +170,10 @@ export function reportsRouter(): Router {
              percentile_cont(0.9) within group (
                order by extract(epoch from (merged_at - pr_opened_at)) / 3600.0
              ) as p90_hours
-           from runs
-           where started_at >= now() - make_interval(days => $1)
-             and pr_opened_at is not null
-             and merged_at is not null`,
+           from runs r
+           where ${applyWindowFilter}
+             and r.pr_opened_at is not null
+             and r.merged_at is not null`,
           [days]
         ),
         query<RetryRateRow>(
@@ -146,7 +182,7 @@ export function reportsRouter(): Router {
              (count(*) filter (where coalesce(j.attempt_count, 0) > 1))::int as retried_runs
            from runs r
            left join run_jobs j on j.run_id = r.id
-           where r.started_at >= now() - make_interval(days => $1)`,
+           where ${applyWindowFilter}`,
           [days]
         ),
         query<OffenderRow>(
@@ -162,11 +198,23 @@ export function reportsRouter(): Router {
            from runs r
            join campaigns c on c.id = r.campaign_id
            join projects p on p.id = c.project_id
-           where r.started_at >= now() - make_interval(days => $1)
+           where ${applyWindowFilter}
            group by p.id, p.name
            having count(*) >= 5
            order by blocked_rate desc, total_runs desc
            limit 10`,
+          [days]
+        ),
+        query<CohortCountRow>(
+          `select
+             (count(*) filter (
+               where r.mode = 'apply'
+                 and r.started_at >= now() - make_interval(days => $1)
+             ))::int as total_apply_runs,
+             (count(*) filter (
+               where ${applyWindowFilter}
+             ))::int as cohort_apply_runs
+           from runs r`,
           [days]
         )
       ]);
@@ -194,7 +242,9 @@ export function reportsRouter(): Router {
              from runs r
              join campaigns c on c.id = r.campaign_id
              where c.project_id = $1
+               and r.mode = 'apply'
                and r.started_at >= now() - make_interval(days => $2)
+               and (${cohortCondition})
                and r.status = 'blocked'
              group by coalesce(r.summary->>'failureKind', 'unknown')
              order by count(*) desc
@@ -208,13 +258,22 @@ export function reportsRouter(): Router {
             totalRuns: Number(row.total_runs),
             blockedRuns: Number(row.blocked_runs),
             blockedRate: Number(row.blocked_rate),
-            topFailureKind: topFailure.rows[0]?.failure_kind ?? "unknown"
+          topFailureKind: topFailure.rows[0]?.failure_kind ?? "unknown"
           };
         })
       );
 
+      const totalApplyRuns = Number(cohortCounts.rows[0]?.total_apply_runs ?? 0);
+      const cohortApplyRuns = Number(cohortCounts.rows[0]?.cohort_apply_runs ?? 0);
+
       return res.json({
         window,
+        cohort,
+        cohortCounts: {
+          totalApplyRuns,
+          cohortApplyRuns,
+          excludedApplyRuns: Math.max(0, totalApplyRuns - cohortApplyRuns)
+        },
         generatedAt: new Date().toISOString(),
         totalsByStatus,
         topFailureKinds: topFailures.rows.map((row) => ({

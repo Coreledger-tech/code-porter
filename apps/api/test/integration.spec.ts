@@ -1958,6 +1958,123 @@ describe("API integration", () => {
     }
   });
 
+  it("applies java.nio add-opens remediation for Chronicle reflective-access signatures", async () => {
+    const repoPath = await prepareMavenTestRuntimeRepo({
+      repoName: "code-porter-int-maven-test-runtime-chronicle-signature"
+    });
+    cleanupPaths.push(repoPath);
+
+    const fakeBin = await mkdtemp(join(tmpdir(), "code-porter-fake-mvn-runtime-chronicle-"));
+    cleanupPaths.push(fakeBin);
+    const mvnScript = join(fakeBin, "mvn");
+    await writeFile(
+      mvnScript,
+      [
+        "#!/bin/sh",
+        "set -eu",
+        "ARGS=\"$*\"",
+        "if echo \"$ARGS\" | grep -q \"dependency:resolve-plugins\"; then",
+        "  exit 0",
+        "fi",
+        "if echo \"$ARGS\" | grep -q -- \"-DskipTests compile\"; then",
+        "  exit 0",
+        "fi",
+        "if echo \"$ARGS\" | grep -q \" test\"; then",
+        "  if grep -q -- \"--add-opens=java.base/java.nio=ALL-UNNAMED\" pom.xml; then",
+        "    echo \"tests ok\"",
+        "    exit 0",
+        "  fi",
+        "  echo \"java.lang.NoSuchFieldException: address\"",
+        "  echo \"at net.openhft.chronicle.bytes.internal.NativeBytesStore\"",
+        "  exit 1",
+        "fi",
+        "exit 0"
+      ].join("\n"),
+      "utf8"
+    );
+    await execFileAsync("chmod", ["+x", mvnScript]);
+
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${fakeBin}:${originalPath ?? ""}`;
+
+    try {
+      const project = await apiFetch<{ id: string }>(baseUrl, "/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "integration-maven-test-runtime-chronicle",
+          localPath: repoPath
+        })
+      });
+
+      const campaign = await apiFetch<{ id: string }>(baseUrl, "/campaigns", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: project.id,
+          policyId: "pilot-stage8",
+          recipePack: "java-maven-test-compat-stage8-pack"
+        })
+      });
+
+      const applyStart = await apiFetch<{ runId: string; status: string }>(
+        baseUrl,
+        `/campaigns/${campaign.id}/apply`,
+        { method: "POST" }
+      );
+
+      const run = await waitForRunTerminal<{
+        status: string;
+        evidencePath: string;
+        evidenceArtifacts: Array<{ type: string; path: string }>;
+        summary: {
+          applySummary?: {
+            remediation?: {
+              rulesApplied?: string[];
+            };
+          };
+          failureKind?: string;
+        };
+      }>({
+        baseUrl,
+        runId: applyStart.runId,
+        timeoutMs: 2 * 60 * 1000
+      });
+
+      expect(["completed", "needs_review"]).toContain(run.status);
+      expect(run.summary.applySummary?.remediation?.rulesApplied).toContain(
+        "ensure_add_opens_java_nio"
+      );
+      expect(run.summary.failureKind).not.toBe("java17_module_access_test_failure");
+
+      const verifyArtifact = JSON.parse(
+        await readFile(
+          findArtifactPath(
+            run.evidenceArtifacts,
+            "verify.json",
+            join(run.evidencePath, "verify.json")
+          ),
+          "utf8"
+        )
+      ) as { tests: { status: string } };
+      expect(verifyArtifact.tests.status).toBe("passed");
+
+      const remediationArtifact = JSON.parse(
+        await readFile(
+          findArtifactPath(
+            run.evidenceArtifacts,
+            "remediation-test-runtime.json",
+            join(run.evidencePath, "remediation-test-runtime.json")
+          ),
+          "utf8"
+        )
+      ) as { iterations?: Array<{ ruleId?: string }> };
+      expect(remediationArtifact.iterations?.[0]?.ruleId).toBe("ensure_add_opens_java_nio");
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
+
   it("writes retrieval context evidence on verify failures when semantic retrieval is enabled", async () => {
     const repoPath = await prepareMavenTestRuntimeRepo({
       repoName: "code-porter-int-semantic-retrieval"
@@ -1980,7 +2097,7 @@ describe("API integration", () => {
         "  exit 0",
         "fi",
         "if echo \"$ARGS\" | grep -q \" test\"; then",
-        "  echo \"java.lang.AssertionError: retrieval failure trigger\"",
+        "  echo \"java.lang.AssertionError: retrieval failure trigger token=ghp_abcdefghijklmnopqrstuvwxyz123456\"",
         "  exit 1",
         "fi",
         "exit 0"
@@ -2050,6 +2167,9 @@ describe("API integration", () => {
         typeof retrievalArtifact.error === "string" ||
           Array.isArray(retrievalArtifact.hits)
       ).toBe(true);
+      expect(JSON.stringify(retrievalArtifact)).not.toContain(
+        "ghp_abcdefghijklmnopqrstuvwxyz123456"
+      );
     } finally {
       process.env.PATH = originalPath;
       if (originalEnabled === undefined) {
@@ -2899,7 +3019,7 @@ describe("API integration", () => {
        ($4, $6, 'apply', 'needs_review', 65, null, null, 'https://github.com/acme/demo/pull/3',
          3, 'open', now() - interval '5 hours', null, null,
          '{\"failureKind\":\"code_failure\"}'::jsonb, now() - interval '6 hours', now() - interval '4 hours'),
-       ($5, $6, 'plan', 'completed', 90, null, null, null,
+       ($5, $6, 'apply', 'completed', 90, null, null, null,
          null, null, null, null, null,
          '{}'::jsonb, now() - interval '10 hours', now() - interval '9 hours')`,
       [runIds[0], runIds[1], runIds[2], runIds[3], runIds[4], campaign.id]
@@ -2914,12 +3034,18 @@ describe("API integration", () => {
        ($2, $6, 'apply', 'completed', 2, 2, 3, now(), now(), now(), now()),
        ($3, $6, 'apply', 'completed', 1, 1, 3, now(), now(), now(), now()),
        ($4, $6, 'apply', 'completed', 2, 2, 3, now(), now(), now(), now()),
-       ($5, $6, 'plan', 'completed', 1, 1, 3, now(), now(), now(), now())`,
+       ($5, $6, 'apply', 'completed', 1, 1, 3, now(), now(), now(), now())`,
       [runIds[0], runIds[1], runIds[2], runIds[3], runIds[4], campaign.id]
     );
 
     const report = await apiFetch<{
       window: string;
+      cohort: string;
+      cohortCounts: {
+        totalApplyRuns: number;
+        cohortApplyRuns: number;
+        excludedApplyRuns: number;
+      };
       totalsByStatus: Record<string, number>;
       prOutcomes: { opened: number; merged: number; mergeRate: number };
       retryRate: { retriedRuns: number; totalRuns: number; rate: number };
@@ -2931,6 +3057,12 @@ describe("API integration", () => {
     }>(baseUrl, "/reports/pilot?window=30d");
 
     expect(report.window).toBe("30d");
+    expect(report.cohort).toBe("all");
+    expect(report.cohortCounts).toEqual({
+      totalApplyRuns: 5,
+      cohortApplyRuns: 5,
+      excludedApplyRuns: 0
+    });
     expect(report.totalsByStatus.completed).toBe(2);
     expect(report.totalsByStatus.blocked).toBe(2);
     expect(report.prOutcomes.opened).toBe(3);
@@ -2945,8 +3077,45 @@ describe("API integration", () => {
       topFailureKind: "artifact_resolution"
     });
 
+    const actionable = await apiFetch<{
+      cohort: string;
+      cohortCounts: {
+        totalApplyRuns: number;
+        cohortApplyRuns: number;
+        excludedApplyRuns: number;
+      };
+      topFailureKinds: Array<{ failureKind: string; count: number }>;
+    }>(baseUrl, "/reports/pilot?window=30d&cohort=actionable_maven");
+    expect(actionable.cohort).toBe("actionable_maven");
+    expect(actionable.cohortCounts).toEqual({
+      totalApplyRuns: 5,
+      cohortApplyRuns: 0,
+      excludedApplyRuns: 5
+    });
+    expect(actionable.topFailureKinds).toEqual([]);
+
+    const coverage = await apiFetch<{
+      cohort: string;
+      cohortCounts: {
+        totalApplyRuns: number;
+        cohortApplyRuns: number;
+        excludedApplyRuns: number;
+      };
+      topFailureKinds: Array<{ failureKind: string; count: number }>;
+    }>(baseUrl, "/reports/pilot?window=30d&cohort=coverage");
+    expect(coverage.cohort).toBe("coverage");
+    expect(coverage.cohortCounts).toEqual({
+      totalApplyRuns: 5,
+      cohortApplyRuns: 5,
+      excludedApplyRuns: 0
+    });
+    expect(coverage.topFailureKinds.length).toBeGreaterThan(0);
+
     const invalid = await apiFetchRaw(baseUrl, "/reports/pilot?window=90d");
     expect(invalid.status).toBe(400);
+
+    const invalidCohort = await apiFetchRaw(baseUrl, "/reports/pilot?window=30d&cohort=bad");
+    expect(invalidCohort.status).toBe(400);
   });
 
   it("executes a queued run only once when two workers are active", async () => {

@@ -37,6 +37,42 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+const RETRIEVAL_REDACTION_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
+  { pattern: /ghp_[A-Za-z0-9]{20,}/g, replacement: "ghp_[REDACTED]" },
+  { pattern: /github_pat_[A-Za-z0-9_]{20,}/g, replacement: "github_pat_[REDACTED]" },
+  { pattern: /Bearer\s+[A-Za-z0-9._~+/=-]{16,}/gi, replacement: "Bearer [REDACTED]" },
+  { pattern: /AKIA[0-9A-Z]{16}/g, replacement: "AKIA[REDACTED]" },
+  { pattern: /xox[baprs]-[A-Za-z0-9-]{10,}/g, replacement: "xox[REDACTED]" }
+];
+
+function sanitizeRetrievalString(value: string): string {
+  let sanitized = value;
+  for (const { pattern, replacement } of RETRIEVAL_REDACTION_PATTERNS) {
+    sanitized = sanitized.replace(pattern, replacement);
+  }
+  return sanitized;
+}
+
+function sanitizeRetrievalValue(value: unknown): unknown {
+  if (typeof value === "string") {
+    return sanitizeRetrievalString(value);
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeRetrievalValue(item));
+  }
+
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+
+  const next: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    next[key] = sanitizeRetrievalValue(item);
+  }
+  return next;
+}
+
 function annotateScanForPolicy(scan: ScanResult, policy: PolicyConfig): ScanResult {
   const selectedManifestPath = scan.metadata.selectedManifestPath ?? null;
   const selectedBuildRoot = scan.metadata.selectedBuildRoot ?? null;
@@ -630,17 +666,20 @@ export async function executeWorkflow(input: {
         topK,
         filePaths: Object.keys(files)
       });
+      const sanitizedRetrieval = sanitizeRetrievalValue(retrieval);
       await input.evidenceWriter.write(runContext, "context/retrieval.json", {
         enabled: true,
         retrievedAt: nowIso(),
-        ...retrieval
+        ...(sanitizedRetrieval as Record<string, unknown>)
       });
     } catch (error) {
       await input.evidenceWriter.write(runContext, "context/retrieval.json", {
         enabled: true,
         provider: process.env.SEMANTIC_RETRIEVAL_PROVIDER ?? "claude_context",
         retrievedAt: nowIso(),
-        error: error instanceof Error ? error.message : String(error ?? "unknown retrieval error")
+        error: sanitizeRetrievalString(
+          error instanceof Error ? error.message : String(error ?? "unknown retrieval error")
+        )
       });
     }
   }

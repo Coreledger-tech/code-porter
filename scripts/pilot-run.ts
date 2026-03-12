@@ -105,6 +105,12 @@ interface PilotRepoResult {
 
 interface PilotReportResponse {
   window: PilotWindow;
+  cohort: "all" | "actionable_maven" | "coverage";
+  cohortCounts: {
+    totalApplyRuns: number;
+    cohortApplyRuns: number;
+    excludedApplyRuns: number;
+  };
   generatedAt: string;
   topFailureKinds: Array<{ failureKind: string; count: number }>;
   blockedByFailureKind: Array<{ failureKind: string; count: number }>;
@@ -163,6 +169,11 @@ interface PilotRunResult {
   prStates: Record<string, number>;
   reportWindow: PilotWindow;
   reportSnapshot: PilotReportResponse;
+  reportSnapshots: {
+    all: PilotReportResponse;
+    actionableMaven: PilotReportResponse;
+    coverage: PilotReportResponse;
+  };
   recommendations: PilotRecommendationOutput;
   ghcrVerificationMode: "public";
   outputPath: string;
@@ -659,6 +670,9 @@ function printSummary(result: PilotRunResult, logger: Logger): void {
   }
   logger.info("");
   logger.info(`Output: ${result.outputPath}`);
+  logger.info(
+    `Report cohorts: all=${result.reportSnapshots.all.cohortCounts.cohortApplyRuns}/${result.reportSnapshots.all.cohortCounts.totalApplyRuns}, actionable_maven=${result.reportSnapshots.actionableMaven.cohortCounts.cohortApplyRuns}, coverage=${result.reportSnapshots.coverage.cohortCounts.cohortApplyRuns}`
+  );
   logger.info(`Top failure kinds: ${result.recommendations.top3FailureKinds.map((entry) => entry.failureKind).join(", ") || "none"}`);
   logger.info(
     `Next recipe pack candidates: ${result.recommendations.nextRecipePackCandidates.map((entry) => entry.id).join(", ") || "none"}`
@@ -784,12 +798,22 @@ export async function runPilot(
     });
   }
 
-  const report = await requestJson<PilotReportResponse>(
-    fetchImpl,
-    `${config.apiBaseUrl}/reports/pilot?window=${config.window}`
-  );
+  const [reportAll, reportActionableMaven, reportCoverage] = await Promise.all([
+    requestJson<PilotReportResponse>(
+      fetchImpl,
+      `${config.apiBaseUrl}/reports/pilot?window=${config.window}&cohort=all`
+    ),
+    requestJson<PilotReportResponse>(
+      fetchImpl,
+      `${config.apiBaseUrl}/reports/pilot?window=${config.window}&cohort=actionable_maven`
+    ),
+    requestJson<PilotReportResponse>(
+      fetchImpl,
+      `${config.apiBaseUrl}/reports/pilot?window=${config.window}&cohort=coverage`
+    )
+  ]);
   const recommendations = buildPilotRecommendations({
-    report,
+    report: reportAll,
     repoResults
   });
   const counters = computePilotCounters(repoResults);
@@ -809,7 +833,12 @@ export async function runPilot(
     retryTotals: counters.retryTotals,
     prStates: counters.prStates,
     reportWindow: config.window,
-    reportSnapshot: report,
+    reportSnapshot: reportAll,
+    reportSnapshots: {
+      all: reportAll,
+      actionableMaven: reportActionableMaven,
+      coverage: reportCoverage
+    },
     recommendations,
     ghcrVerificationMode: "public",
     outputPath

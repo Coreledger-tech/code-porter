@@ -30,6 +30,14 @@ const verifyFailure = {
   staticChecks: { status: "passed" as const }
 };
 
+const verifyFailureWithToken = {
+  ...verifyFailure,
+  tests: {
+    ...verifyFailure.tests,
+    output: "Authorization: Bearer ghp_abcdefghijklmnopqrstuvwxyz123456"
+  }
+};
+
 describe("semantic retrieval provider", () => {
   const originalEnv = { ...process.env };
 
@@ -103,5 +111,40 @@ describe("semantic retrieval provider", () => {
         filePaths: ["pom.xml"]
       })
     ).rejects.toThrow("module not installed");
+  });
+
+  it("sanitizes sensitive tokens in retrieval query and hits", async () => {
+    const noop = new NoopSemanticRetrievalProvider();
+    const noopResult = await noop.retrieve({
+      repoPath: "/tmp/repo",
+      scan,
+      verify: verifyFailureWithToken,
+      topK: 2,
+      filePaths: ["src/test/java/TokenTest.java"]
+    });
+    expect(noopResult.query).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz123456");
+    expect(noopResult.query).toContain("ghp_[REDACTED]");
+
+    const provider = new ClaudeContextSemanticRetrievalProvider({
+      coreLoader: async () => ({
+        retrieveTopK: async () => [
+          {
+            filePath: "src/test/java/Secrets.java",
+            score: 0.9,
+            reason: "Bearer ghp_abcdefghijklmnopqrstuvwxyz123456"
+          }
+        ]
+      })
+    });
+
+    const result = await provider.retrieve({
+      repoPath: "/tmp/repo",
+      scan,
+      verify: verifyFailureWithToken,
+      topK: 1,
+      filePaths: ["src/test/java/Secrets.java"]
+    });
+    expect(result.hits[0]?.reason).toContain("[REDACTED]");
+    expect(result.hits[0]?.reason).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz123456");
   });
 });
