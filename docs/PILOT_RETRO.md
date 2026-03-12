@@ -460,3 +460,67 @@ This section is intentionally pre-execution and contains expected outcomes only.
 - Android is classified as `gradle/android`, executes guarded apply, and opens PRs with explicit guarded reason.
 3. Signature-absent no-op behavior is preserved in non-Axum cohort runs.
 - Runs without module-access signatures (for example Java-Web-Crawler) show no test-runtime remediation rule application (`remediationRules=[]`).
+
+## Stage 7 Results
+- Stage 7 cohort artifact: `/Users/kelvinmusodza/Downloads/Code porter/evidence/pilot/2026-03-11T07-30-50-715Z/pilot-summary.json`
+- Stage 7 report snapshot (`7d`): `generatedAt=2026-03-12T01:11:34.224Z`
+- Policy ID: `pilot-stage6`
+- Maven pack: `java-maven-test-compat-pack`
+- Gradle pack: `java-gradle-java17-baseline-pack`
+
+### PR Triage Outcomes
+1. Android triage
+- Kept PR `#2`, closed PR `#1` as superseded, and squash-merged PR `#2`.
+- Merged PR: `https://github.com/Coreledger-tech/android-ESP-32-bluetooth-arduino/pull/2` (`merged_at=2026-03-11T06:30:20Z`).
+
+2. Axum triage
+- Closed superseded PRs `#15`, `#16`, and `#18`.
+- Kept and squash-merged PR `#19`.
+- Merged PR: `https://github.com/Coreledger-tech/Axum-matching-engine/pull/19` (`merged_at=2026-03-12T01:10:41Z`).
+
+### Targeted Gates (Post-Fix)
+1. Axum targeted apply gate
+- runId: `08702830-00a6-42b7-9129-bac9a6a5d1af`
+- status: `needs_review`
+- failureKind: `code_test_failure`
+- remediation evidence: `remediation-test-runtime.json` + `artifacts/remediation-test-runtime-1.patch`
+- remediation rule applied: `ensure_add_opens_sun_nio_ch`
+- PR opened then superseded: `https://github.com/Coreledger-tech/Axum-matching-engine/pull/18`
+- outcome: terminal failure kind now matches final verify reality (`tests failed`, compile passed), eliminating the earlier stale `code_compile_failure` mismatch.
+
+2. Android targeted guarded-baseline gate
+- runId: `09129c72-a33b-4de0-afe7-b7b257f8bcaf`
+- status: `needs_review`
+- failureKind: `guarded_baseline_applied`
+- scan metadata: `selectedBuildSystem=gradle`, `gradleProjectType=android`, `buildSystemDisposition=supported`
+- guarded reason: `Guarded Android baseline apply mode skips Gradle task execution; run full Android CI outside Code Porter before merge`
+- PR outcome: none in this run (`changedFiles=0`), expected because baseline changes were already present.
+
+### Full 5-Repo Cohort Rerun (Stage 7)
+| repo | planRunId | applyRunId | applyStatus | applyFailureKind | prUrl |
+| --- | --- | --- | --- | --- | --- |
+| Java-Web-Crawler | `13ded092-85c1-4c2a-905e-bb2906a50875` | `f454b910-41c4-4506-a1f6-23c0ef79006c` | `completed` |  |  |
+| Axum-matching-engine | `485be928-bcb8-4174-b10d-821df48ecbbd` | `b2516e83-c495-495f-b0e2-bcf162c6425d` | `needs_review` | `code_test_failure` | `https://github.com/Coreledger-tech/Axum-matching-engine/pull/19` |
+| authelia-TOTP | `3f4703d8-e7e4-413f-815b-5ee02e82da36` | `086d48a4-8144-4dc5-b5d5-de2cac510400` | `needs_review` | `unsupported_build_system` |  |
+| Exception-handling-reconciliation | `0717d29a-3cbc-4d9a-aa46-5f65535f5b1a` | `b091bf6f-e178-4fa6-ad9a-3a18ca3fc020` | `needs_review` | `unsupported_build_system` |  |
+| android-ESP-32-bluetooth-arduino | `7068bfe3-9dd8-4e65-90aa-5b84be37be32` | `4434be4e-bfc8-41a1-a94c-6772c8932e90` | `needs_review` | `guarded_baseline_applied` |  |
+
+### Stage 7 Metrics Snapshot
+- Cohort statuses: `completed=1`, `needs_review=9`, `blocked=0`
+- Cohort failure kinds: `unsupported_build_system=4`, `code_test_failure=1`, `guarded_baseline_applied=1`
+- 7d aggregate report:
+  - totalsByStatus: `needs_review=12`, `completed=1`
+  - topFailureKinds: `unsupported_build_system=4`, `manual_review_required=3`, `code_test_failure=3`, `guarded_baseline_applied=2`, `unknown=1`
+  - prOutcomes: `opened=2`, `merged=1`, `closedUnmerged=1`, `open=0`, `mergeRate=0.5`
+  - timeToGreen: `sampleSize=1`, `p50Hours=17.667565`, `p90Hours=17.667565`
+  - retryRate: `1/13 = 7.69%`
+
+### Stage 7 Delta Assessment
+1. Reporting normalization is now stable for guarded and policy-excluded paths.
+- Guarded Android runs persist `failureKind=guarded_baseline_applied`.
+- Policy-excluded/no-manifest runs persist `failureKind=unsupported_build_system`.
+- `unknown` is no longer the top 7d failure kind.
+2. Axum classifier consistency is fixed.
+- Module-access remediator can trigger on test-runtime signature, and terminal classification now reflects final verify phase (`code_test_failure` here).
+3. Merge signal is now visible in pilot reporting.
+- 7d report now has `merged=1` and non-null time-to-green from merged Axum PR `#19`.
