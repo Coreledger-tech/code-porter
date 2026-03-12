@@ -190,6 +190,18 @@ function gatherVerifyFailureKinds(summary: VerifySummary): VerifyFailureKind[] {
 }
 
 function derivePrimaryVerifyFailureKind(summary: VerifySummary): VerifyFailureKind | undefined {
+  if (summary.compile.status === "failed" && summary.compile.failureKind) {
+    return summary.compile.failureKind;
+  }
+
+  if (summary.tests.status === "failed" && summary.tests.failureKind) {
+    return summary.tests.failureKind;
+  }
+
+  if (summary.staticChecks.status === "failed" && summary.staticChecks.failureKind) {
+    return summary.staticChecks.failureKind;
+  }
+
   for (const check of [summary.compile, summary.tests, summary.staticChecks]) {
     if (check.status !== "passed" && check.failureKind) {
       return check.failureKind;
@@ -693,7 +705,11 @@ export async function executeWorkflow(input: {
     ? "budget_guardrail"
     : unsupportedBuildSystem
       ? "unsupported_build_system"
-      : primaryVerifyFailureKind;
+      : guardedAndroidBaselineMode
+        ? "guarded_baseline_applied"
+        : primaryVerifyFailureKind;
+  const normalizedFailureKind =
+    failureKind ?? (status === "needs_review" ? "manual_review_required" : undefined);
 
   const workspaceSummary = {
     workspacePath: input.workspace.workspacePath,
@@ -716,7 +732,7 @@ export async function executeWorkflow(input: {
     policyViolations: countPolicyViolations(policyDecisions),
     score: confidenceScore?.score ?? null,
     classification: confidenceScore?.classification ?? "blocked",
-    ...(failureKind ? { failureKind } : {}),
+    ...(normalizedFailureKind ? { failureKind: normalizedFailureKind } : {}),
     blockedReason,
     ...(guardedAndroidBaselineMode ? { guardedBaselineReason: GUARDED_ANDROID_BASELINE_REASON } : {}),
     workspace: workspaceSummary,

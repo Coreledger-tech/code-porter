@@ -30,6 +30,8 @@ export type RunFailureKind =
   | "repo_write"
   | "workspace_prepare"
   | "workspace_cleanup"
+  | "manual_review_required"
+  | "guarded_baseline_applied"
   | "unsupported_build_system"
   | "budget_guardrail"
   | "cancelled"
