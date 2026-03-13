@@ -130,6 +130,13 @@ Use the deterministic pilot script for a full 5-repo run.
 2. If multiple PRs exist, select the keeper with the cleanest in-scope diff and latest valid evidence.
 3. Close superseded PRs with explicit references to the keeper.
 4. Merge only when the keeper satisfies the RC merge checklist (diff scope, churn limits, evidence integrity, and classifier consistency).
+5. Keeper scoring is deterministic in this order:
+- merge checklist pass
+- run status (`completed > needs_review > blocked > failed > cancelled`)
+- fewer changed files
+- fewer changed lines
+- newer completion time
+6. If a guarded Android run makes no deterministic baseline changes, record it as a no-op outcome instead of opening a low-signal PR.
 
 ## v1.0.0 Exit Criteria
 Pilot exits to v1.0.0 when all targets are met over the last 30 days:

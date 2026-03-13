@@ -52,6 +52,7 @@ docker pull ghcr.io/coreledger-tech/code-porter:v1.0.0-rc.2
 1. Keep exactly one active modernization PR per repository in a given pilot window.
 2. Close superseded PRs with a deterministic reason comment (for example `superseded by #16`).
 3. Use squash merge for keeper PRs.
+4. Prefer the keeper selected by Code Porter scoring unless operator review finds a checklist failure the automation missed.
 
 ## Merge Checklist
 1. Diff scope guardrails:
@@ -62,9 +63,13 @@ docker pull ghcr.io/coreledger-tech/code-porter:v1.0.0-rc.2
 3. Evidence guardrails:
 - `verify.json` exists and reflects terminal state.
 - remediation artifacts exist when remediation was applied (`remediation*.json` and patch artifacts).
+- `merge-checklist.json` exists and records pass/fail reasons before PR creation.
 - terminal failure-kind mapping matches final verify phase (compile vs tests).
 4. Parseability guardrails:
 - XML/Gradle files remain parseable after deterministic patching.
+5. Guarded Android guardrails:
+- open a PR only when wrapper or `gradle.properties` baseline edits exist.
+- if no guarded edits are needed, record a no-op guarded baseline outcome and skip PR creation.
 
 ## Fresh Clone Compose Smoke Test
 ```bash
