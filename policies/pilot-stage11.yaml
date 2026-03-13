@@ -1,16 +1,15 @@
-maxChangeLines: 300
-maxFilesChanged: 10
+maxChangeLines: 120
+maxFilesChanged: 6
 requireTestsIfPresent: true
-maxInflightRunsPerProject: 2
-maxInflightRunsGlobal: 10
-maxVerifyMinutesPerRun: 20
-maxVerifyRetries: 2
-maxEvidenceZipBytes: 52428800
-defaultRecipePack: java-maven-plugin-modernize
+maxInflightRunsPerProject: 1
+maxInflightRunsGlobal: 2
+maxVerifyMinutesPerRun: 15
+maxVerifyRetries: 1
+maxEvidenceZipBytes: 41943040
+defaultRecipePack: java-maven-test-compat-stage8-pack
 allowedBuildSystems:
   - maven
   - gradle
-  - node
 verifyFailureMode: warn
 verify:
   blockingFailureKinds:
@@ -23,16 +22,16 @@ verify:
     - tool_missing
     - artifact_resolution
     - repo_unreachable
-    - budget_exceeded
     - verify_timeout
     - verifier_infrastructure_failure
+    - budget_exceeded
   retryOnCachedResolution: true
   maven:
     forceUpdate: true
     prefetchPlugins: true
     purgeLocalCache: false
 gradle:
-  allowAndroidBaselineApply: false
+  allowAndroidBaselineApply: true
 pullRequests:
   keeper:
     enabled: true
@@ -40,7 +39,7 @@ pullRequests:
     enabled: true
     label: code-porter:merge-ready
   autoMerge:
-    enabled: false
+    enabled: true
     allowedBuildSystems:
       - maven
     maxFilesChanged: 1
@@ -48,7 +47,7 @@ pullRequests:
     mergeMethod: squash
 remediation:
   mavenCompile:
-    enabled: false
+    enabled: true
     maxIterations: 2
     maxFilesChangedPerIteration: 1
     maxLinesChangedPerIteration: 25
@@ -59,8 +58,8 @@ remediation:
       - ensure_lombok_annotation_processor_path
       - remove_proc_none
   mavenTestRuntime:
-    enabled: false
-    maxIterations: 1
+    enabled: true
+    maxIterations: 2
     maxFilesChangedPerIteration: 2
     maxLinesChangedPerIteration: 20
     maxFilesChangedTotal: 2
@@ -70,5 +69,5 @@ remediation:
       - ensure_add_opens_java_nio
       - ensure_add_opens_java_lang
 confidenceThresholds:
-  pass: 70
-  needsReview: 55
+  pass: 80
+  needsReview: 60

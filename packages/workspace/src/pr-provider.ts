@@ -244,4 +244,68 @@ export class GitHubPRProvider implements PRProviderPort {
       }
     });
   }
+
+  async addLabelsToPullRequest(input: {
+    project: Project;
+    prNumber: number;
+    labels: string[];
+  }): Promise<void> {
+    if (input.labels.length === 0) {
+      return;
+    }
+
+    let token: string;
+    try {
+      token = await this.authProvider.getToken();
+    } catch (error) {
+      throw new RepoOperationError(
+        error instanceof Error
+          ? error.message
+          : "GitHub authentication token is missing",
+        "auth"
+      );
+    }
+
+    await fetchGitHubApi({
+      apiUrl: this.apiUrl,
+      token,
+      path: `/repos/${repoApiPath(input.project)}/issues/${input.prNumber}/labels`,
+      method: "POST",
+      authFailureMessage: "GitHub authentication failed while labeling pull request",
+      failureMessage: "GitHub pull request labeling failed",
+      body: {
+        labels: input.labels
+      }
+    });
+  }
+
+  async mergePullRequest(input: {
+    project: Project;
+    prNumber: number;
+    mergeMethod: "merge" | "squash" | "rebase";
+  }): Promise<void> {
+    let token: string;
+    try {
+      token = await this.authProvider.getToken();
+    } catch (error) {
+      throw new RepoOperationError(
+        error instanceof Error
+          ? error.message
+          : "GitHub authentication token is missing",
+        "auth"
+      );
+    }
+
+    await fetchGitHubApi({
+      apiUrl: this.apiUrl,
+      token,
+      path: `/repos/${repoApiPath(input.project)}/pulls/${input.prNumber}/merge`,
+      method: "PUT",
+      authFailureMessage: "GitHub authentication failed while merging pull request",
+      failureMessage: "GitHub pull request merge failed",
+      body: {
+        merge_method: input.mergeMethod
+      }
+    });
+  }
 }

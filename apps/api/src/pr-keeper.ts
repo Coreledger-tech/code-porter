@@ -33,13 +33,21 @@ export function inferChecklist(summary: Record<string, unknown>, status: RunStat
       passed: raw.passed,
       reasons: Array.isArray(raw.reasons)
         ? raw.reasons.filter((value): value is string => typeof value === "string")
+        : [],
+      advisories: Array.isArray(raw.advisories)
+        ? raw.advisories.filter((value): value is string => typeof value === "string")
+        : [],
+      changedFilePaths: Array.isArray(raw.changedFilePaths)
+        ? raw.changedFilePaths.filter((value): value is string => typeof value === "string")
         : []
     };
   }
 
   return {
     passed: status === "completed",
-    reasons: []
+    reasons: [],
+    advisories: [],
+    changedFilePaths: []
   };
 }
 

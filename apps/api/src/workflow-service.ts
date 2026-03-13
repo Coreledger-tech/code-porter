@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { executeWorkflow } from "@code-porter/core/src/workflow/index.js";
 import { YamlPolicyEngine } from "@code-porter/core/src/policy.js";
 import type {
   Campaign,
   MergeChecklistSummary,
+  PullRequestMergeMethod,
   RunEventLevel,
   RunEventType,
   Project,
@@ -229,18 +230,63 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
+function normalizeKeeperSummary(summary: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...summary,
+    keeperCandidate:
+      typeof summary.keeperCandidate === "boolean" ? summary.keeperCandidate : false,
+    keeperChosen:
+      typeof summary.keeperChosen === "boolean" ? summary.keeperChosen : false,
+    keeperMerged:
+      typeof summary.keeperMerged === "boolean" ? summary.keeperMerged : false,
+    mergeReady:
+      typeof summary.mergeReady === "boolean" ? summary.mergeReady : false,
+    supersededByPrNumber:
+      typeof summary.supersededByPrNumber === "number" ? summary.supersededByPrNumber : null,
+    supersededClosedCount:
+      typeof summary.supersededClosedCount === "number" ? summary.supersededClosedCount : 0
+  };
+}
+
 function normalizeMergeChecklistSummary(
   summary: Record<string, unknown>,
   checklist?: MergeChecklistSummary
 ): Record<string, unknown> {
   return {
-    ...summary,
-    keeperCandidate:
-      typeof summary.keeperCandidate === "boolean" ? summary.keeperCandidate : false,
-    supersededByPrNumber:
-      typeof summary.supersededByPrNumber === "number" ? summary.supersededByPrNumber : null,
+    ...normalizeKeeperSummary(summary),
     ...(checklist ? { mergeChecklist: checklist } : {})
   };
+}
+
+type ManifestArtifactRecord = {
+  type: string;
+  path: string;
+  sha256: string;
+  storageType: "local_fs" | "s3";
+  bucket: string | null;
+  objectKey: string | null;
+};
+
+function replaceManifestArtifact(
+  artifacts: ManifestArtifactRecord[],
+  artifact: ManifestArtifactRecord
+): ManifestArtifactRecord[] {
+  const index = artifacts.findIndex(
+    (candidate) => candidate.type === artifact.type && candidate.path === artifact.path
+  );
+  if (index >= 0) {
+    artifacts[index] = artifact;
+    return artifacts;
+  }
+
+  const sameTypeIndex = artifacts.findIndex((candidate) => candidate.type === artifact.type);
+  if (sameTypeIndex >= 0) {
+    artifacts[sameTypeIndex] = artifact;
+    return artifacts;
+  }
+
+  artifacts.push(artifact);
+  return artifacts;
 }
 
 async function writeSupplementalEvidenceArtifact(input: {
@@ -329,27 +375,38 @@ async function loadOpenKeeperCandidates(input: {
   return result.rows;
 }
 
+async function updateRunSummary(runId: string, mutate: (summary: Record<string, unknown>) => Record<string, unknown>): Promise<void> {
+  const state = await getRunState(runId);
+  const summary = normalizeMergeChecklistSummary(asRecord(state?.summary));
+  const nextSummary = normalizeMergeChecklistSummary(mutate(summary));
+
+  await query(
+    `update runs
+     set summary = $2::jsonb
+     where id = $1`,
+    [runId, JSON.stringify(redactUnknown(nextSummary))]
+  );
+}
+
 async function markSupersededRun(input: {
   runId: string;
   keeperPrNumber: number;
   keeperPrUrl: string;
 }): Promise<void> {
-  const state = await getRunState(input.runId);
-  const summary = asRecord(state?.summary);
-  const nextSummary = {
+  await updateRunSummary(input.runId, (summary) => ({
     ...summary,
     prState: "closed",
     keeperCandidate: false,
+    keeperChosen: false,
+    mergeReady: false,
     supersededByPrNumber: input.keeperPrNumber
-  };
-
+  }));
   await query(
     `update runs
      set pr_state = 'closed',
-         closed_at = coalesce(closed_at, now()),
-         summary = $2::jsonb
+         closed_at = coalesce(closed_at, now())
      where id = $1`,
-    [input.runId, JSON.stringify(redactUnknown(nextSummary))]
+    [input.runId]
   );
 
   await appendRunEvent(input.runId, {
@@ -362,6 +419,137 @@ async function markSupersededRun(input: {
       keeperPrUrl: input.keeperPrUrl
     }
   });
+}
+
+async function incrementKeeperSupersededClosedCount(runId: string, count: number): Promise<void> {
+  if (count <= 0) {
+    return;
+  }
+
+  await updateRunSummary(runId, (summary) => ({
+    ...summary,
+    keeperCandidate: true,
+    keeperChosen: true,
+    supersededClosedCount: Number(summary.supersededClosedCount ?? 0) + count
+  }));
+}
+
+async function setKeeperMergeReady(input: {
+  runId: string;
+  mergeReady: boolean;
+}): Promise<void> {
+  await updateRunSummary(input.runId, (summary) => ({
+    ...summary,
+    keeperCandidate: true,
+    keeperChosen: true,
+    mergeReady: input.mergeReady
+  }));
+}
+
+function isStrictSafeAutoMergeEligible(input: {
+  summary: Record<string, unknown>;
+  status: RunStatus;
+  policy: Awaited<ReturnType<YamlPolicyEngine["load"]>>;
+}): boolean {
+  const { summary, status, policy } = input;
+  if (!policy.pullRequests?.autoMerge.enabled) {
+    return false;
+  }
+
+  const mergeChecklist = inferChecklist(summary, status);
+  const scan = asRecord(summary.scan);
+  const blockedReason = typeof summary.blockedReason === "string" ? summary.blockedReason : null;
+  const policyViolations = Number(summary.policyViolations ?? 0);
+  const changedFiles = Number(summary.changedFiles ?? 0);
+  const changedLines = Number(summary.changedLines ?? 0);
+  const changedFilePaths = Array.isArray(mergeChecklist.changedFilePaths)
+    ? mergeChecklist.changedFilePaths
+    : [];
+
+  return (
+    summary.mode === "apply" &&
+    status === "completed" &&
+    scan.selectedBuildSystem === "maven" &&
+    scan.buildSystemDisposition === "supported" &&
+    mergeChecklist.passed === true &&
+    blockedReason === null &&
+    policyViolations === 0 &&
+    policy.pullRequests.autoMerge.allowedBuildSystems.includes("maven") &&
+    changedFiles <= policy.pullRequests.autoMerge.maxFilesChanged &&
+    changedLines <= policy.pullRequests.autoMerge.maxLinesChanged &&
+    changedFilePaths.length === 1 &&
+    changedFilePaths[0] === "pom.xml"
+  );
+}
+
+async function markKeeperMergedRun(input: {
+  runId: string;
+  mergedAt: string;
+}): Promise<void> {
+  await updateRunSummary(input.runId, (summary) => ({
+    ...summary,
+    prState: "merged",
+    keeperCandidate: true,
+    keeperChosen: true,
+    keeperMerged: true,
+    mergeReady: true
+  }));
+
+  await query(
+    `update runs
+     set pr_state = 'merged',
+         merged_at = coalesce(merged_at, $2::timestamptz),
+         closed_at = coalesce(closed_at, $2::timestamptz)
+     where id = $1`,
+    [input.runId, input.mergedAt]
+  );
+}
+
+async function rewriteRunJsonArtifact(input: {
+  evidenceRoot: string;
+  projectId: string;
+  campaignId: string;
+  runId: string;
+  finalStatus: RunStatus;
+  finalSummary: Record<string, unknown>;
+  finalBranchName: string | null;
+  finalPrUrl: string | null;
+  finalPrNumber: number | null;
+  finalPrState: "open" | "merged" | "closed" | null;
+  finalPrOpenedAt: string | null;
+  finalMergedAt: string | null;
+  finalClosedAt: string | null;
+}): Promise<ManifestArtifactRecord | null> {
+  const artifactRoot = resolveArtifactRoot(input);
+  const runJsonPath = join(artifactRoot, "run.json");
+
+  try {
+    const existing = JSON.parse(await readFile(runJsonPath, "utf8")) as Record<string, unknown>;
+    const updated = {
+      ...existing,
+      status: input.finalStatus,
+      branchName: input.finalBranchName,
+      prUrl: input.finalPrUrl,
+      prNumber: input.finalPrNumber,
+      prState: input.finalPrState,
+      prOpenedAt: input.finalPrOpenedAt,
+      mergedAt: input.finalMergedAt,
+      closedAt: input.finalClosedAt,
+      summary: redactUnknown(input.finalSummary)
+    };
+    const serialized = `${JSON.stringify(updated, null, 2)}\n`;
+    await writeFile(runJsonPath, serialized, "utf8");
+    return {
+      type: "run.json",
+      path: runJsonPath,
+      sha256: sha256(Buffer.from(serialized)),
+      storageType: "local_fs",
+      bucket: null,
+      objectKey: null
+    };
+  } catch {
+    return null;
+  }
 }
 
 const DEFAULT_RECIPE_PACK = "java-maven-plugin-modernize";
@@ -1109,16 +1297,8 @@ export async function executeRunById(
   let finalClosedAt: string | null = null;
   let finalLastCiState: string | null = null;
   let finalLastCiCheckedAt: string | null = null;
-  let manifestArtifacts:
-    | Array<{
-        type: string;
-        path: string;
-        sha256: string;
-        storageType: "local_fs" | "s3";
-        bucket: string | null;
-        objectKey: string | null;
-      }>
-    | undefined;
+  let manifestArtifacts: ManifestArtifactRecord[] | undefined;
+  let activePolicyConfig: Awaited<ReturnType<YamlPolicyEngine["load"]>> | undefined;
   let workflowResult:
     | Awaited<ReturnType<typeof executeWorkflow>>
     | undefined;
@@ -1300,6 +1480,7 @@ export async function executeRunById(
       const checklistPolicy = await new YamlPolicyEngine().load(
         resolve(process.cwd(), context.policy_config_path)
       );
+      activePolicyConfig = checklistPolicy;
       const artifactRoot = resolveArtifactRoot({
         evidenceRoot,
         projectId: project.id,
@@ -1373,6 +1554,9 @@ export async function executeRunById(
       }
 
       const apply = extractApplySummary(workflowResult.summary);
+      const prPolicy =
+        activePolicyConfig ??
+        (await new YamlPolicyEngine().load(resolve(process.cwd(), context.policy_config_path)));
 
       const mergeChecklist = inferChecklist(finalSummary, finalStatus);
       if (apply.commitAfter && mergeChecklist.passed) {
@@ -1411,12 +1595,13 @@ export async function executeRunById(
           finalSummary.prNumber = finalPrNumber;
         }
 
-        if (finalPrNumber !== null) {
-          const existingCandidates = (await loadOpenKeeperCandidates({
+        if (finalPrNumber !== null && prPolicy.pullRequests?.keeper.enabled !== false) {
+          const existingCandidateRows = await loadOpenKeeperCandidates({
             projectId: project.id,
             baseBranch: workspace.defaultBranch,
             excludeRunId: run.id
-          }))
+          });
+          const existingCandidates = existingCandidateRows
             .map((row) => toKeeperCandidate(row))
             .filter((candidate): candidate is KeeperCandidate => candidate !== null);
           const currentCandidate: KeeperCandidate = {
@@ -1431,9 +1616,11 @@ export async function executeRunById(
           };
           const keeper = chooseKeeperCandidate([...existingCandidates, currentCandidate]);
           finalSummary.keeperCandidate = keeper.runId === run.id;
+          finalSummary.keeperChosen = keeper.runId === run.id;
           finalSummary.supersededByPrNumber = keeper.runId === run.id ? null : keeper.prNumber;
 
           const prProvider = new GitHubPRProvider(githubAuthProvider);
+          let supersededClosedCount = 0;
 
           for (const candidate of existingCandidates) {
             if (candidate.runId === keeper.runId) {
@@ -1455,6 +1642,7 @@ export async function executeRunById(
                 keeperPrNumber: keeper.prNumber,
                 keeperPrUrl: keeper.prUrl
               });
+              supersededClosedCount += 1;
             } catch (error) {
               finalSummary.keeperAutomationWarning = redactSecrets(
                 error instanceof Error ? error.message : String(error)
@@ -1476,6 +1664,106 @@ export async function executeRunById(
               finalPrState = "closed";
               finalClosedAt = nowIso();
               finalSummary.prState = "closed";
+              supersededClosedCount += 1;
+            } catch (error) {
+              finalSummary.keeperAutomationWarning = redactSecrets(
+                error instanceof Error ? error.message : String(error)
+              );
+            }
+          }
+
+          if (keeper.runId === run.id) {
+            finalSummary.supersededClosedCount = supersededClosedCount;
+          } else {
+            await incrementKeeperSupersededClosedCount(keeper.runId, supersededClosedCount);
+          }
+
+          const keeperShouldBeMergeReady =
+            prPolicy.pullRequests?.mergeReady.enabled !== false && keeper.mergeChecklist.passed;
+          let keeperMergeReadyApplied = false;
+
+          if (keeperShouldBeMergeReady) {
+            try {
+              await prProvider.addLabelsToPullRequest({
+                project,
+                prNumber: keeper.prNumber,
+                labels: [prPolicy.pullRequests?.mergeReady.label ?? "code-porter:merge-ready"]
+              });
+              keeperMergeReadyApplied = true;
+              await appendRunEvent(run.id, {
+                level: "info",
+                eventType: "lifecycle",
+                step: "pr_keeper",
+                message: `Keeper PR marked merge-ready`,
+                payload: {
+                  keeperPrNumber: keeper.prNumber,
+                  label: prPolicy.pullRequests?.mergeReady.label ?? "code-porter:merge-ready"
+                }
+              });
+            } catch (error) {
+              finalSummary.keeperAutomationWarning = redactSecrets(
+                error instanceof Error ? error.message : String(error)
+              );
+            }
+          }
+
+          if (keeper.runId === run.id) {
+            finalSummary.mergeReady = keeperMergeReadyApplied;
+          } else if (keeperMergeReadyApplied) {
+            await setKeeperMergeReady({
+              runId: keeper.runId,
+              mergeReady: true
+            });
+          }
+
+          const keeperSummaryForMerge =
+            keeper.runId === run.id
+              ? {
+                  ...finalSummary,
+                  changedFiles: apply.changedFiles,
+                  changedLines: apply.changedLines,
+                  mergeChecklist: mergeChecklist
+                }
+              : asRecord(existingCandidateRows.find((candidate) => candidate.id === keeper.runId)?.summary);
+
+          if (
+            keeperMergeReadyApplied &&
+            isStrictSafeAutoMergeEligible({
+              summary: keeperSummaryForMerge,
+              status: keeper.status,
+              policy: prPolicy
+            })
+          ) {
+            try {
+              await prProvider.mergePullRequest({
+                project,
+                prNumber: keeper.prNumber,
+                mergeMethod:
+                  (prPolicy.pullRequests?.autoMerge.mergeMethod as PullRequestMergeMethod) ?? "squash"
+              });
+              const mergedAt = nowIso();
+              if (keeper.runId === run.id) {
+                finalPrState = "merged";
+                finalMergedAt = mergedAt;
+                finalClosedAt = mergedAt;
+                finalSummary.prState = "merged";
+                finalSummary.keeperMerged = true;
+              } else {
+                await markKeeperMergedRun({
+                  runId: keeper.runId,
+                  mergedAt
+                });
+              }
+              await appendRunEvent(run.id, {
+                level: "info",
+                eventType: "lifecycle",
+                step: "pr_keeper",
+                message: `Keeper PR auto-merged`,
+                payload: {
+                  keeperPrNumber: keeper.prNumber,
+                  mergeMethod: prPolicy.pullRequests?.autoMerge.mergeMethod ?? "squash"
+                }
+              });
             } catch (error) {
               finalSummary.keeperAutomationWarning = redactSecrets(
                 error instanceof Error ? error.message : String(error)
@@ -1602,8 +1890,34 @@ export async function executeRunById(
       failureKind: "cancelled",
       cancelledAt: nowIso(),
       cancelReason:
-        cancellationBeforeFinalize.reason ?? "cancel requested by operator"
+      cancellationBeforeFinalize.reason ?? "cancel requested by operator"
     };
+  }
+
+  finalSummary = normalizeMergeChecklistSummary(
+    finalSummary,
+    inferChecklist(finalSummary, finalStatus)
+  );
+
+  if (manifestArtifacts) {
+    const rewrittenRunArtifact = await rewriteRunJsonArtifact({
+      evidenceRoot,
+      projectId: project.id,
+      campaignId: campaign.id,
+      runId: run.id,
+      finalStatus,
+      finalSummary,
+      finalBranchName,
+      finalPrUrl,
+      finalPrNumber,
+      finalPrState,
+      finalPrOpenedAt,
+      finalMergedAt,
+      finalClosedAt
+    });
+    if (rewrittenRunArtifact) {
+      replaceManifestArtifact(manifestArtifacts, rewrittenRunArtifact);
+    }
   }
 
   const leaseOwned = await isRunLeaseOwnedByWorker(run.id, workerId);

@@ -5,6 +5,7 @@ export type EvidenceStorage = "local_fs" | "s3";
 export type GitHubAuthMode = "pat" | "app";
 export type CampaignLifecycleStatus = "active" | "paused";
 export type PullRequestState = "open" | "merged" | "closed";
+export type PullRequestMergeMethod = "merge" | "squash" | "rebase";
 export type GradleProjectType = "jvm" | "android" | "unknown";
 export type BuildSystemDisposition =
   | "supported"
@@ -42,6 +43,8 @@ export type RunFailureKind =
 export interface MergeChecklistSummary {
   passed: boolean;
   reasons: string[];
+  advisories?: string[];
+  changedFilePaths?: string[];
 }
 export type VerifyFailureKind =
   | "code_compile_failure"
@@ -170,6 +173,22 @@ export interface PolicyConfig {
   };
   gradle?: {
     allowAndroidBaselineApply: boolean;
+  };
+  pullRequests?: {
+    keeper: {
+      enabled: boolean;
+    };
+    mergeReady: {
+      enabled: boolean;
+      label: string;
+    };
+    autoMerge: {
+      enabled: boolean;
+      allowedBuildSystems: BuildSystem[];
+      maxFilesChanged: number;
+      maxLinesChanged: number;
+      mergeMethod: PullRequestMergeMethod;
+    };
   };
   remediation?: {
     mavenCompile?: {

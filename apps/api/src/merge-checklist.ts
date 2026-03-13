@@ -257,7 +257,9 @@ export async function evaluateMergeChecklist(input: {
   return {
     summary: {
       passed,
-      reasons: passed ? advisories : reasons
+      reasons: passed ? advisories : reasons,
+      advisories,
+      changedFilePaths
     },
     artifact: {
       passed,

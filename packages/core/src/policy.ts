@@ -63,6 +63,22 @@ const DEFAULT_POLICY: PolicyConfig = {
   gradle: {
     allowAndroidBaselineApply: false
   },
+  pullRequests: {
+    keeper: {
+      enabled: true
+    },
+    mergeReady: {
+      enabled: true,
+      label: "code-porter:merge-ready"
+    },
+    autoMerge: {
+      enabled: false,
+      allowedBuildSystems: ["maven"],
+      maxFilesChanged: 1,
+      maxLinesChanged: 25,
+      mergeMethod: "squash"
+    }
+  },
   remediation: {
     mavenCompile: {
       enabled: false,
@@ -208,6 +224,7 @@ function normalizePolicy(raw: unknown): PolicyConfig {
   const verify = (config.verify ?? null) as Record<string, unknown> | null;
   const remediation = (config.remediation ?? null) as Record<string, unknown> | null;
   const gradle = (config.gradle ?? null) as Record<string, unknown> | null;
+  const pullRequests = (config.pullRequests ?? null) as Record<string, unknown> | null;
 
   const verifyFailureMode = asVerifyFailureMode(
     config.verifyFailureMode,
@@ -344,6 +361,54 @@ function normalizePolicy(raw: unknown): PolicyConfig {
         }
       : undefined;
 
+  const rawKeeper = (pullRequests?.keeper ?? null) as Record<string, unknown> | null;
+  const rawMergeReady = (pullRequests?.mergeReady ?? null) as Record<string, unknown> | null;
+  const rawAutoMerge = (pullRequests?.autoMerge ?? null) as Record<string, unknown> | null;
+  const normalizedPullRequests: NonNullable<PolicyConfig["pullRequests"]> = {
+    keeper: {
+      enabled: asBoolean(
+        rawKeeper?.enabled,
+        DEFAULT_POLICY.pullRequests?.keeper.enabled ?? true
+      )
+    },
+    mergeReady: {
+      enabled: asBoolean(
+        rawMergeReady?.enabled,
+        DEFAULT_POLICY.pullRequests?.mergeReady.enabled ?? true
+      ),
+      label: asString(
+        rawMergeReady?.label,
+        DEFAULT_POLICY.pullRequests?.mergeReady.label ?? "code-porter:merge-ready"
+      )
+    },
+    autoMerge: {
+      enabled: asBoolean(
+        rawAutoMerge?.enabled,
+        DEFAULT_POLICY.pullRequests?.autoMerge.enabled ?? false
+      ),
+      allowedBuildSystems: asStringArray(
+        rawAutoMerge?.allowedBuildSystems,
+        DEFAULT_POLICY.pullRequests?.autoMerge.allowedBuildSystems ?? ["maven"]
+      ).filter((item): item is PolicyConfig["allowedBuildSystems"][number] => {
+        return ["maven", "gradle", "node", "python", "go", "unknown"].includes(item);
+      }),
+      maxFilesChanged: asPositiveInt(
+        rawAutoMerge?.maxFilesChanged,
+        DEFAULT_POLICY.pullRequests?.autoMerge.maxFilesChanged ?? 1
+      ),
+      maxLinesChanged: asPositiveInt(
+        rawAutoMerge?.maxLinesChanged,
+        DEFAULT_POLICY.pullRequests?.autoMerge.maxLinesChanged ?? 25
+      ),
+      mergeMethod:
+        rawAutoMerge?.mergeMethod === "merge" ||
+        rawAutoMerge?.mergeMethod === "squash" ||
+        rawAutoMerge?.mergeMethod === "rebase"
+          ? rawAutoMerge.mergeMethod
+          : (DEFAULT_POLICY.pullRequests?.autoMerge.mergeMethod ?? "squash")
+    }
+  };
+
   return {
     maxChangeLines: asNumber(config.maxChangeLines, DEFAULT_POLICY.maxChangeLines),
     maxFilesChanged: asNumber(config.maxFilesChanged, DEFAULT_POLICY.maxFilesChanged),
@@ -389,6 +454,7 @@ function normalizePolicy(raw: unknown): PolicyConfig {
         DEFAULT_POLICY.gradle?.allowAndroidBaselineApply ?? false
       )
     },
+    pullRequests: normalizedPullRequests,
     remediation:
       normalizedMavenCompileRemediation || normalizedMavenTestRuntimeRemediation
         ? {

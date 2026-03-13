@@ -281,6 +281,16 @@ export interface PRProviderPort {
     project: Project;
     prNumber: number;
   }): Promise<void>;
+  addLabelsToPullRequest(input: {
+    project: Project;
+    prNumber: number;
+    labels: string[];
+  }): Promise<void>;
+  mergePullRequest(input: {
+    project: Project;
+    prNumber: number;
+    mergeMethod: "merge" | "squash" | "rebase";
+  }): Promise<void>;
 }
 
 export interface WorkflowRunner {
