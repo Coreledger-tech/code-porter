@@ -184,6 +184,8 @@ function verifyForPlanMode(
 
 const GUARDED_ANDROID_BASELINE_REASON =
   "Guarded Android baseline apply mode skips Gradle task execution; run full Android CI outside Code Porter before merge";
+const GUARDED_ANDROID_BASELINE_NOOP_REASON =
+  "Guarded Android baseline is already satisfied; no deterministic wrapper or gradle.properties changes were required";
 
 function verifyForGuardedAndroidMode(
   buildSystem: VerifySummary["buildSystem"],
@@ -449,6 +451,7 @@ export async function executeWorkflow(input: {
   let remediationActions: RemediationAction[] = [];
   let commitAfter: string | undefined;
   let guardedAndroidBaselineMode = false;
+  let guardedAndroidBaselineNoop = false;
 
   const planBlocking = hasBlockingDecision(policyDecisions);
 
@@ -507,6 +510,7 @@ export async function executeWorkflow(input: {
       scanResult.buildSystem === "gradle" &&
       scanResult.metadata.gradleProjectType === "android" &&
       policy.gradle?.allowAndroidBaselineApply === true;
+    guardedAndroidBaselineNoop = guardedAndroidBaselineMode && applyStepResult.changedFiles === 0;
 
     if (guardedAndroidBaselineMode) {
       await emit({
@@ -773,7 +777,9 @@ export async function executeWorkflow(input: {
     : unsupportedBuildSystem
       ? "unsupported_build_system"
       : guardedAndroidBaselineMode
-        ? "guarded_baseline_applied"
+        ? guardedAndroidBaselineNoop
+          ? "guarded_baseline_noop"
+          : "guarded_baseline_applied"
         : primaryVerifyFailureKind;
   const normalizedFailureKind =
     failureKind ?? (status === "needs_review" ? "manual_review_required" : undefined);
@@ -801,7 +807,14 @@ export async function executeWorkflow(input: {
     classification: confidenceScore?.classification ?? "blocked",
     ...(normalizedFailureKind ? { failureKind: normalizedFailureKind } : {}),
     blockedReason,
-    ...(guardedAndroidBaselineMode ? { guardedBaselineReason: GUARDED_ANDROID_BASELINE_REASON } : {}),
+    ...(guardedAndroidBaselineMode
+      ? {
+          guardedBaselineReason: guardedAndroidBaselineNoop
+            ? GUARDED_ANDROID_BASELINE_NOOP_REASON
+            : GUARDED_ANDROID_BASELINE_REASON,
+          guardedBaselineNoop: guardedAndroidBaselineNoop
+        }
+      : {}),
     workspace: workspaceSummary,
     scan: {
       selectedBuildSystem: scanResult.buildSystem,
