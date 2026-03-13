@@ -1,4 +1,15 @@
 import { Router } from "express";
+import { deriveCoverageClassification } from "@code-porter/core/src/coverage-classification.js";
+import type {
+  BuildSystem,
+  BuildSystemDisposition,
+  CoverageEntry,
+  CoverageNextLane,
+  CoverageOutcome,
+  GradleProjectType,
+  RunStatus,
+  UnsupportedCoverageReason
+} from "@code-porter/core/src/models.js";
 import { query } from "../db/client.js";
 
 interface StatusCountRow {
@@ -53,6 +64,24 @@ interface KeeperOutcomeRow {
   superseded_closed_count: number;
 }
 
+interface CoverageEntryRow {
+  project_id: string;
+  project_name: string;
+  repo: string | null;
+  run_id: string;
+  status: RunStatus;
+  selected_build_system: BuildSystem | null;
+  build_system_disposition: BuildSystemDisposition | null;
+  gradle_project_type: GradleProjectType | null;
+  gradle_wrapper_path: string | null;
+  coverage_outcome: CoverageOutcome | null;
+  unsupported_reason: UnsupportedCoverageReason | null;
+  recommended_next_lane: CoverageNextLane | null;
+  failure_kind: string | null;
+  blocked_reason: string | null;
+  pr_url: string | null;
+}
+
 type PilotCohort = "all" | "actionable_maven" | "coverage";
 
 function parseWindow(
@@ -89,6 +118,35 @@ function safeRate(numerator: number, denominator: number): number {
   return numerator / denominator;
 }
 
+function buildCoverageSummary(entries: CoverageEntry[]): {
+  byOutcome: Record<string, number>;
+  byReason: Record<string, number>;
+  byRecommendation: Record<string, number>;
+} {
+  const byOutcome: Record<string, number> = {};
+  const byReason: Record<string, number> = {};
+  const byRecommendation: Record<string, number> = {};
+
+  for (const entry of entries) {
+    if (entry.coverageOutcome) {
+      byOutcome[entry.coverageOutcome] = (byOutcome[entry.coverageOutcome] ?? 0) + 1;
+    }
+    if (entry.unsupportedReason) {
+      byReason[entry.unsupportedReason] = (byReason[entry.unsupportedReason] ?? 0) + 1;
+    }
+    if (entry.recommendedNextLane) {
+      byRecommendation[entry.recommendedNextLane] =
+        (byRecommendation[entry.recommendedNextLane] ?? 0) + 1;
+    }
+  }
+
+  return {
+    byOutcome,
+    byReason,
+    byRecommendation
+  };
+}
+
 export function reportsRouter(): Router {
   const router = Router();
 
@@ -115,15 +173,19 @@ export function reportsRouter(): Router {
         case when r.status = 'completed' then null else 'manual_review_required' end,
         'unknown'
       )`;
+      const coverageCondition = `not (${actionableMavenCondition})`;
       const cohortCondition =
         cohort === "all"
           ? "true"
           : cohort === "actionable_maven"
             ? actionableMavenCondition
-            : `not (${actionableMavenCondition})`;
+            : coverageCondition;
       const applyWindowFilter = `r.mode = 'apply'
          and r.started_at >= now() - make_interval(days => $1)
          and (${cohortCondition})`;
+      const coverageWindowFilter = `r.mode = 'apply'
+         and r.started_at >= now() - make_interval(days => $1)
+         and (${coverageCondition})`;
 
       const [
         statuses,
@@ -134,7 +196,8 @@ export function reportsRouter(): Router {
         retryRate,
         offenders,
         cohortCounts,
-        keeperOutcomes
+        keeperOutcomes,
+        coverageEntryRows
       ] = await Promise.all([
         query<StatusCountRow>(
           `select status, count(*)::int as count
@@ -252,7 +315,33 @@ export function reportsRouter(): Router {
            from runs r
            where ${applyWindowFilter}`,
           [days]
-        )
+        ),
+        cohort === "actionable_maven"
+          ? Promise.resolve({ rows: [] as CoverageEntryRow[] })
+          : query<CoverageEntryRow>(
+            `select distinct on (p.id)
+               p.id as project_id,
+               p.name as project_name,
+               p.repo as repo,
+               r.id as run_id,
+               r.status,
+               nullif(r.summary#>>'{scan,selectedBuildSystem}', '') as selected_build_system,
+               nullif(r.summary#>>'{scan,buildSystemDisposition}', '') as build_system_disposition,
+               nullif(r.summary#>>'{scan,gradleProjectType}', '') as gradle_project_type,
+               nullif(r.summary#>>'{scan,gradleWrapperPath}', '') as gradle_wrapper_path,
+               nullif(r.summary#>>'{scan,coverageOutcome}', '') as coverage_outcome,
+               nullif(r.summary#>>'{scan,unsupportedReason}', '') as unsupported_reason,
+               nullif(r.summary#>>'{scan,recommendedNextLane}', '') as recommended_next_lane,
+               nullif(r.summary->>'failureKind', '') as failure_kind,
+               nullif(r.summary->>'blockedReason', '') as blocked_reason,
+               r.pr_url
+             from runs r
+             join campaigns c on c.id = r.campaign_id
+             join projects p on p.id = c.project_id
+             where ${coverageWindowFilter}
+             order by p.id, r.started_at desc`,
+            [days]
+          )
       ]);
 
       const totalsByStatus = Object.fromEntries(
@@ -307,6 +396,36 @@ export function reportsRouter(): Router {
         merge_ready: 0,
         superseded_closed_count: 0
       };
+      const coverageEntries: CoverageEntry[] = coverageEntryRows.rows
+        .map((row) => {
+          const derived = deriveCoverageClassification({
+            buildSystem: row.selected_build_system ?? "unknown",
+            buildSystemDisposition: row.build_system_disposition,
+            gradleProjectType: row.gradle_project_type,
+            gradleWrapperPath: row.gradle_wrapper_path,
+            failureKind: row.failure_kind,
+            status: row.status
+          });
+
+          return {
+            projectId: row.project_id,
+            projectName: row.project_name,
+            repo: row.repo,
+            runId: row.run_id,
+            selectedBuildSystem: row.selected_build_system ?? "unknown",
+            buildSystemDisposition: row.build_system_disposition ?? "supported",
+            gradleProjectType: row.gradle_project_type,
+            coverageOutcome: row.coverage_outcome ?? derived.coverageOutcome,
+            unsupportedReason: row.unsupported_reason ?? derived.unsupportedReason,
+            recommendedNextLane:
+              row.recommended_next_lane ?? derived.recommendedNextLane,
+            failureKind: row.failure_kind,
+            blockedReason: row.blocked_reason,
+            prUrl: row.pr_url
+          };
+        })
+        .sort((left, right) => left.projectName.localeCompare(right.projectName));
+      const coverageSummary = buildCoverageSummary(coverageEntries);
 
       return res.json({
         window,
@@ -357,6 +476,8 @@ export function reportsRouter(): Router {
           mergeReady: Number(keeper.merge_ready),
           supersededClosedCount: Number(keeper.superseded_closed_count)
         },
+        coverageEntries,
+        coverageSummary,
         worstOffendersByProject: offendersWithTopFailure
       });
     } catch (error) {

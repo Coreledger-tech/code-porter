@@ -132,6 +132,32 @@ interface PilotReportResponse {
     p50Hours: number | null;
     p90Hours: number | null;
   };
+  coverageEntries?: Array<{
+    projectId: string;
+    projectName: string;
+    repo: string | null;
+    runId: string;
+    selectedBuildSystem: string;
+    buildSystemDisposition: string;
+    gradleProjectType: string | null;
+    coverageOutcome: string | null;
+    unsupportedReason: string | null;
+    recommendedNextLane: string | null;
+    failureKind: string | null;
+    blockedReason: string | null;
+    prUrl: string | null;
+  }>;
+  coverageSummary?: {
+    byOutcome: Record<string, number>;
+    byReason: Record<string, number>;
+    byRecommendation: Record<string, number>;
+  };
+  keeperOutcomes?: {
+    keeperChosen: number;
+    keeperMerged: number;
+    mergeReady: number;
+    supersededClosedCount: number;
+  };
 }
 
 interface BudgetTrigger {
@@ -176,7 +202,24 @@ interface PilotRunResult {
   };
   recommendations: PilotRecommendationOutput;
   ghcrVerificationMode: "public";
+  coverageSummaryPath: string;
   outputPath: string;
+}
+
+interface CoverageSummaryArtifact {
+  generatedAt: string;
+  window: PilotWindow;
+  cohort: "coverage";
+  report: PilotReportResponse;
+  totals: {
+    totalCoverageRepos: number;
+    excludedCount: number;
+    guardedAppliedCount: number;
+    guardedNoopCount: number;
+    guardedBlockedCount: number;
+  };
+  byReason: Record<string, number>;
+  byRecommendation: Record<string, number>;
 }
 
 interface PilotRunDependencies {
@@ -611,6 +654,31 @@ export function buildPilotRecommendations(input: {
   };
 }
 
+function buildCoverageSummaryArtifact(input: {
+  generatedAt: string;
+  window: PilotWindow;
+  report: PilotReportResponse;
+}): CoverageSummaryArtifact {
+  const entries = input.report.coverageEntries ?? [];
+  const byOutcome = input.report.coverageSummary?.byOutcome ?? {};
+
+  return {
+    generatedAt: input.generatedAt,
+    window: input.window,
+    cohort: "coverage",
+    report: input.report,
+    totals: {
+      totalCoverageRepos: entries.length,
+      excludedCount: byOutcome.excluded ?? 0,
+      guardedAppliedCount: byOutcome.guarded_applied ?? 0,
+      guardedNoopCount: byOutcome.guarded_noop ?? 0,
+      guardedBlockedCount: byOutcome.guarded_blocked ?? 0
+    },
+    byReason: input.report.coverageSummary?.byReason ?? {},
+    byRecommendation: input.report.coverageSummary?.byRecommendation ?? {}
+  };
+}
+
 function computePilotCounters(results: PilotRepoResult[]): {
   statuses: Record<string, number>;
   failureKinds: Record<string, number>;
@@ -822,9 +890,16 @@ export async function runPilot(
   const outputDir = resolve(outputRoot, timestamp);
   await mkdir(outputDir, { recursive: true });
   const outputPath = resolve(outputDir, "pilot-summary.json");
+  const coverageSummaryPath = resolve(outputDir, "coverage-summary.json");
+  const generatedAt = now().toISOString();
+  const coverageSummaryArtifact = buildCoverageSummaryArtifact({
+    generatedAt,
+    window: config.window,
+    report: reportCoverage
+  });
 
   const result: PilotRunResult = {
-    generatedAt: now().toISOString(),
+    generatedAt,
     config,
     repos: repoResults,
     statuses: counters.statuses,
@@ -841,9 +916,11 @@ export async function runPilot(
     },
     recommendations,
     ghcrVerificationMode: "public",
+    coverageSummaryPath,
     outputPath
   };
 
+  await writeFile(coverageSummaryPath, JSON.stringify(coverageSummaryArtifact, null, 2), "utf8");
   await writeFile(outputPath, JSON.stringify(result, null, 2), "utf8");
   printSummary(result, logger);
   return result;
