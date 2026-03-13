@@ -602,3 +602,71 @@ This section is intentionally pre-execution and contains expected outcomes only.
 
 3. Android guarded baseline semantics remain explicit and non-opaque.
 - Stage 8 Android runs classify as `supported` Gradle Android with `failureKind=guarded_baseline_applied` and explicit guarded reason.
+
+## Stage 9 Results
+- Stage 9 cohort artifact: `/Users/kelvinmusodza/Downloads/Code porter/evidence/pilot/2026-03-13T00-47-38-699Z/pilot-summary.json`
+- Stage 9 report snapshots:
+  - `/tmp/pilot-report-stage9-all.json`
+  - `/tmp/pilot-report-stage9-actionable.json`
+  - `/tmp/pilot-report-stage9-coverage.json`
+- Policy ID: `pilot-stage8`
+- Maven pack: `java-maven-test-compat-stage8-pack`
+- Gradle pack: `java-gradle-guarded-baseline-pack`
+
+### Targeted Axum Gate (Stage 9.2)
+- runId: `a77a5e8c-4ef5-4e06-9794-0a79b1449f20`
+- status: `completed`
+- PR opened: `https://github.com/Coreledger-tech/Axum-matching-engine/pull/23`
+- evidence:
+  - `/Users/kelvinmusodza/Downloads/Code porter/evidence/5727d326-888c-4599-a1b8-b45b6350f8b4/ef74aae8-d5a2-48e4-bf77-0888590fc508/a77a5e8c-4ef5-4e06-9794-0a79b1449f20/verify.json`
+  - `/Users/kelvinmusodza/Downloads/Code porter/evidence/5727d326-888c-4599-a1b8-b45b6350f8b4/ef74aae8-d5a2-48e4-bf77-0888590fc508/a77a5e8c-4ef5-4e06-9794-0a79b1449f20/remediation-test-runtime.json`
+  - `/Users/kelvinmusodza/Downloads/Code porter/evidence/5727d326-888c-4599-a1b8-b45b6350f8b4/ef74aae8-d5a2-48e4-bf77-0888590fc508/a77a5e8c-4ef5-4e06-9794-0a79b1449f20/artifacts/remediation-test-runtime-1.patch`
+  - `/Users/kelvinmusodza/Downloads/Code porter/evidence/5727d326-888c-4599-a1b8-b45b6350f8b4/ef74aae8-d5a2-48e4-bf77-0888590fc508/a77a5e8c-4ef5-4e06-9794-0a79b1449f20/artifacts/remediation-test-runtime-2.patch`
+- remediation rules fired:
+  - `ensure_add_opens_java_nio`
+  - `ensure_add_opens_java_lang`
+- outcome: the chained Chronicle module-access fix advanced Axum from timeout-prone `needs_review` into a fully `completed` run with both deterministic runtime patches recorded.
+
+### Full 5-Repo Cohort Rerun (Stage 9)
+| repo | planRunId | applyRunId | applyStatus | applyFailureKind | prUrl |
+| --- | --- | --- | --- | --- | --- |
+| Java-Web-Crawler | `73c679b8-1304-4f49-90a3-c3aaea5efe83` | `8e9806b7-166f-47f7-a417-ba27315a4dc2` | `completed` |  |  |
+| Axum-matching-engine | `ae629522-c4cc-4cc3-bdf7-2c134b039aa4` | `6be8d96c-a079-4d67-9c3b-c2afda7dc1a0` | `completed` |  | `https://github.com/Coreledger-tech/Axum-matching-engine/pull/24` |
+| authelia-TOTP | `aa1b8be5-692d-4a70-8e70-be81c971af82` | `a46d5193-5e25-432c-8f8f-351b3a3f3d83` | `needs_review` | `unsupported_build_system` |  |
+| Exception-handling-reconciliation | `eabd99dd-44aa-4a2c-b20d-ab8285df3bef` | `15f36822-a5a7-462f-928c-cee97a99b203` | `needs_review` | `unsupported_build_system` |  |
+| android-ESP-32-bluetooth-arduino | `9359edef-dd4d-4d31-96da-05b6ed7183d4` | `da67a0a4-899e-4a36-b3b2-05255b802f9d` | `needs_review` | `guarded_baseline_applied` |  |
+
+### Stage 9 Cohort-Split Metrics (`window=7d`)
+1. `cohort=all`
+- totalsByStatus: `completed=3`, `needs_review=4`
+- topFailureKinds: `unsupported_build_system=2`, `code_test_failure=1`, `guarded_baseline_applied=1`
+- prOutcomes: `opened=2`, `merged=0`, `open=2`, `mergeRate=0`
+- retryRate: `1/7 = 14.29%`
+
+2. `cohort=actionable_maven`
+- totalsByStatus: `completed=3`, `needs_review=1`
+- topFailureKinds: `code_test_failure=1`
+- prOutcomes: `opened=2`, `merged=0`, `open=2`, `mergeRate=0`
+- retryRate: `1/4 = 25%`
+- `unknown` is absent from `topFailureKinds`
+
+3. `cohort=coverage`
+- totalsByStatus: `needs_review=3`
+- topFailureKinds: `unsupported_build_system=2`, `guarded_baseline_applied=1`
+- prOutcomes: `opened=0`, `merged=0`
+
+### Stage 9 Delta Vs Stage 8
+1. Axum moved from `needs_review` to `completed`.
+- Stage 8 Axum apply run `066c6dc5-7388-48e4-a2f4-22fbc2cf8c15` ended `needs_review` with `code_test_failure`.
+- Stage 9 Axum targeted gate `a77a5e8c-4ef5-4e06-9794-0a79b1449f20` completed after chained runtime remediation.
+- Stage 9 cohort Axum apply run `6be8d96c-a079-4d67-9c3b-c2afda7dc1a0` also completed and opened PR `#24`.
+
+2. Actionable Maven reporting is now stable and useful.
+- Stage 8 actionable cohort top failure kinds were `code_test_failure=3` and `unknown=1`.
+- Stage 9 actionable cohort top failure kinds are just `code_test_failure=1`.
+- `unknown` is no longer present in the actionable cohort snapshot.
+
+3. Completed outcomes increased without expanding unsupported noise.
+- Stage 8 `cohort=all`: `completed=1`, `needs_review=7`
+- Stage 9 `cohort=all`: `completed=3`, `needs_review=4`
+- Coverage cohort remains explicit: `unsupported_build_system` and `guarded_baseline_applied` account for all non-actionable Stage 9 outcomes.
