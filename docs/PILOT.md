@@ -136,7 +136,10 @@ Use the deterministic pilot script for a full 5-repo run.
 - fewer changed files
 - fewer changed lines
 - newer completion time
-6. If a guarded Android run makes no deterministic baseline changes, record it as a no-op outcome instead of opening a low-signal PR.
+6. Keeper automation may comment on and close superseded PRs automatically when policy enables it.
+7. Keeper PRs are labeled `code-porter:merge-ready` only when `merge-checklist.json` passes.
+8. Stage 11 auto-merge is Maven-only, squash-only, and limited to strict-safe one-file `pom.xml` diffs.
+9. If a guarded Android run makes no deterministic baseline changes, record it as a no-op outcome instead of opening a low-signal PR.
 
 ## v1.0.0 Exit Criteria
 Pilot exits to v1.0.0 when all targets are met over the last 30 days:

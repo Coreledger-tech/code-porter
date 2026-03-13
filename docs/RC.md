@@ -53,6 +53,9 @@ docker pull ghcr.io/coreledger-tech/code-porter:v1.0.0-rc.2
 2. Close superseded PRs with a deterministic reason comment (for example `superseded by #16`).
 3. Use squash merge for keeper PRs.
 4. Prefer the keeper selected by Code Porter scoring unless operator review finds a checklist failure the automation missed.
+5. When Stage 11 policy enables keeper automation, expect superseded PRs to be auto-commented and closed.
+6. `code-porter:merge-ready` means the keeper PR passed `merge-checklist.json`; it is a readiness signal, not a blanket merge instruction.
+7. Auto-merge is limited to strict-safe Maven keeper PRs and never applies to guarded Android runs.
 
 ## Merge Checklist
 1. Diff scope guardrails:
