@@ -91,6 +91,7 @@ Use the deterministic pilot script for a full 5-repo run.
 4. Validate output:
 - console summary table
 - JSON artifact under `./evidence/pilot/<timestamp>/pilot-summary.json`
+- JSON artifact under `./evidence/pilot/<timestamp>/coverage-summary.json`
 
 ### Locked Execution Rules
 1. Plans are enqueued for all repos first.
@@ -121,9 +122,30 @@ Use the deterministic pilot script for a full 5-repo run.
 
 ### Post-Wave Retro Handoff
 1. Run `GET /reports/pilot?window=30d`.
-2. Attach the pilot summary JSON.
-3. Fill [PILOT_RETRO_TEMPLATE.md](/Users/kelvinmusodza/Downloads/Code porter/docs/PILOT_RETRO_TEMPLATE.md).
-4. Capture prioritized pack proposals and assign owners for next sprint.
+2. Run `GET /reports/pilot?window=30d&cohort=coverage` and review repo-level coverage entries.
+3. Attach both `pilot-summary.json` and `coverage-summary.json`.
+4. Fill [PILOT_RETRO_TEMPLATE.md](/Users/kelvinmusodza/Downloads/Code porter/docs/PILOT_RETRO_TEMPLATE.md).
+5. Capture prioritized pack proposals and assign owners for next sprint.
+
+## Coverage Cohort Interpretation
+1. `coverage` is the non-actionable slice for the selected window; it is not a failure bucket.
+2. Each coverage entry should explain:
+- selected build system
+- disposition / Gradle subtype
+- unsupported reason
+- recommended next lane
+- guarded baseline outcome when applicable
+3. Guarded Android results should report one of:
+- `guarded_applied`
+- `guarded_noop`
+- `guarded_blocked`
+4. Excluded repos should carry deterministic next-lane hints such as:
+- `go_readiness_lane`
+- `node_readiness_lane`
+- `gradle_jvm_wrapper_lane`
+- `android_guarded_baseline`
+- `manifest_follow_up`
+- `enable_build_system_in_policy`
 
 ## PR Keeper Loop
 1. Keep only one active keeper PR per repo per pilot wave.
