@@ -46,6 +46,13 @@ interface CohortCountRow {
   cohort_apply_runs: number;
 }
 
+interface KeeperOutcomeRow {
+  keeper_chosen: number;
+  keeper_merged: number;
+  merge_ready: number;
+  superseded_closed_count: number;
+}
+
 type PilotCohort = "all" | "actionable_maven" | "coverage";
 
 function parseWindow(
@@ -126,7 +133,8 @@ export function reportsRouter(): Router {
         timeToGreen,
         retryRate,
         offenders,
-        cohortCounts
+        cohortCounts,
+        keeperOutcomes
       ] = await Promise.all([
         query<StatusCountRow>(
           `select status, count(*)::int as count
@@ -222,6 +230,28 @@ export function reportsRouter(): Router {
              ))::int as cohort_apply_runs
            from runs r`,
           [days]
+        ),
+        query<KeeperOutcomeRow>(
+          `select
+             (count(*) filter (
+               where coalesce(r.summary->>'keeperChosen', 'false') = 'true'
+             ))::int as keeper_chosen,
+             (count(*) filter (
+               where coalesce(r.summary->>'keeperMerged', 'false') = 'true'
+             ))::int as keeper_merged,
+             (count(*) filter (
+               where coalesce(r.summary->>'mergeReady', 'false') = 'true'
+             ))::int as merge_ready,
+             coalesce(sum(
+               case
+                 when coalesce(r.summary->>'supersededClosedCount', '') ~ '^[0-9]+$'
+                 then (r.summary->>'supersededClosedCount')::int
+                 else 0
+               end
+             ), 0)::int as superseded_closed_count
+           from runs r
+           where ${applyWindowFilter}`,
+          [days]
         )
       ]);
 
@@ -271,6 +301,12 @@ export function reportsRouter(): Router {
 
       const totalApplyRuns = Number(cohortCounts.rows[0]?.total_apply_runs ?? 0);
       const cohortApplyRuns = Number(cohortCounts.rows[0]?.cohort_apply_runs ?? 0);
+      const keeper = keeperOutcomes.rows[0] ?? {
+        keeper_chosen: 0,
+        keeper_merged: 0,
+        merge_ready: 0,
+        superseded_closed_count: 0
+      };
 
       return res.json({
         window,
@@ -314,6 +350,12 @@ export function reportsRouter(): Router {
           retriedRuns: Number(retry.retried_runs),
           totalRuns: Number(retry.total_runs),
           rate: safeRate(Number(retry.retried_runs), Number(retry.total_runs))
+        },
+        keeperOutcomes: {
+          keeperChosen: Number(keeper.keeper_chosen),
+          keeperMerged: Number(keeper.keeper_merged),
+          mergeReady: Number(keeper.merge_ready),
+          supersededClosedCount: Number(keeper.superseded_closed_count)
         },
         worstOffendersByProject: offendersWithTopFailure
       });

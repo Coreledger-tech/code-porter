@@ -214,7 +214,17 @@ export class PrLifecyclePollerWorker {
                  else closed_at
                end,
                last_ci_checked_at = now(),
-               summary = coalesce(summary, '{}'::jsonb) || jsonb_build_object('prState', $3)
+               summary = coalesce(summary, '{}'::jsonb)
+                 || jsonb_build_object('prState', $3)
+                 || case
+                   when $3 = 'merged'
+                    and (
+                      coalesce(summary->>'keeperChosen', 'false') = 'true'
+                      or coalesce(summary->>'keeperCandidate', 'false') = 'true'
+                    )
+                   then jsonb_build_object('keeperMerged', true)
+                   else '{}'::jsonb
+                 end
            where id = $1`,
           [
             row.id,
