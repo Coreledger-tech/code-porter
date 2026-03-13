@@ -749,3 +749,98 @@ This section is intentionally pre-execution and contains expected outcomes only.
 
 3. Android guarded no-op outcomes are explicit and measurable.
 - No-op Android runs now record `guarded_baseline_noop` with a concrete reason and no PR side effects.
+
+## Stage 11 Results
+- Stage 11 live validation ran on the host runtime at `http://127.0.0.1:3014` under Java 17 with `GITHUB_AUTH_MODE=pat` so the personal control repos could exercise branch publish, PR close/comment, and merge flows.
+- Stage 11 report snapshots:
+  - `/tmp/pilot-report-stage11-all.json`
+  - `/tmp/pilot-report-stage11-actionable.json`
+  - `/tmp/pilot-report-stage11-coverage.json`
+
+### Axum Live Sanity Run
+- live Axum Stage 11 run:
+  - runId: `9a8acdd7-6c4a-48e4-962c-e74ee8c96149`
+  - status: `completed`
+  - PR opened: none
+  - evidence root: `/Users/kelvinmusodza/Downloads/Code porter/evidence/2625866b-3f87-441e-8586-3f205f824f4e/d937e7f3-b2fb-439c-b65e-ef368a04511d/9a8acdd7-6c4a-48e4-962c-e74ee8c96149`
+- validated live summary/evidence fields:
+  - `merge-checklist.json` exists
+  - `mergeChecklist.passed=true`
+  - `keeperChosen=false`
+  - `keeperMerged=false`
+  - `supersededClosedCount=0`
+- this confirmed the Stage 11 no-new-PR path stays explicit when the keeper outcome was already settled upstream.
+
+### Control Repo Keeper Validation
+- dedicated keeper-control repo: `https://github.com/KELVI23/code-porter-stage11-control`
+- first keeper run:
+  - runId: `62452dd6-7994-425c-aa82-ef9db5277e9f`
+  - PR: `https://github.com/KELVI23/code-porter-stage11-control/pull/1`
+  - status after keeper replacement: `completed`, PR state `closed`
+- second keeper run:
+  - runId: `9fa8ac2a-e5cf-4810-add4-4f9537d38def`
+  - PR: `https://github.com/KELVI23/code-porter-stage11-control/pull/2`
+  - status: `completed`
+  - keeper fields:
+    - `keeperChosen=true`
+    - `mergeReady=true`
+    - `supersededClosedCount=1`
+- GitHub-side keeper proof:
+  - superseded PR `#1` was auto-commented with `Superseded by #2 (keeper for this pilot window).`
+  - superseded PR `#1` was auto-closed
+  - keeper PR `#2` received label `code-porter:merge-ready`
+- note: this repo did not auto-merge because the run shape still surfaced `changedFiles=3`, so it stayed a merge-ready keeper but not strict-safe auto-merge eligible.
+
+### Strict-Safe Auto-Merge Validation
+- dedicated one-change auto-merge repo: `https://github.com/KELVI23/code-porter-stage11-onechange-control`
+- first run:
+  - runId: `6ab9a0fd-c685-44ba-ae9d-1445fc0631b1`
+  - PR: `https://github.com/KELVI23/code-porter-stage11-onechange-control/pull/1`
+  - status after keeper replacement: `completed`, PR state `closed`
+- second run:
+  - runId: `1e0969eb-f65d-417e-bf17-4ff3ddebb3d9`
+  - PR: `https://github.com/KELVI23/code-porter-stage11-onechange-control/pull/2`
+  - status: `completed`
+  - strict-safe summary fields:
+    - `changedFiles=1`
+    - `changedLines=2`
+    - `mergeChecklist.changedFilePaths=["pom.xml"]`
+    - `keeperChosen=true`
+    - `mergeReady=true`
+    - `keeperMerged=true`
+    - `supersededClosedCount=1`
+- GitHub-side auto-merge proof:
+  - superseded PR `#1` was auto-commented with `Superseded by #2 (keeper for this pilot window).`
+  - superseded PR `#1` was auto-closed
+  - keeper PR `#2` received label `code-porter:merge-ready`
+  - keeper PR `#2` was squash-merged automatically at `2026-03-13T03:38:13Z`
+
+### Stage 11 Report Snapshots (`window=7d`)
+1. `cohort=all`
+- keeperOutcomes: `keeperChosen=3`, `keeperMerged=1`, `mergeReady=3`, `supersededClosedCount=3`
+- prOutcomes: `opened=6`, `merged=1`, `closedUnmerged=3`, `open=2`, `mergeRate=0.1667`
+- topFailureKinds: `manual_review_required=2`, `repo_write=2`, `code_test_failure=1`
+
+2. `cohort=actionable_maven`
+- keeperOutcomes: `keeperChosen=3`, `keeperMerged=1`, `mergeReady=3`, `supersededClosedCount=3`
+- prOutcomes: `opened=6`, `merged=1`, `closedUnmerged=3`, `open=2`, `mergeRate=0.1667`
+- topFailureKinds: `manual_review_required=2`, `code_test_failure=1`
+
+3. `cohort=coverage`
+- keeperOutcomes: all `0`
+- prOutcomes: all `0`
+- topFailureKinds: `repo_write=2`
+
+### Stage 11 Delta
+1. Keeper automation is now proven live, not just in tests.
+- one live repo showed the full keeper-select, supersede-comment, supersede-close, and merge-ready label loop
+- one strict-safe live repo showed the same loop ending in an automatic squash merge
+
+2. Keeper metrics now show up in pilot reports.
+- `/reports/pilot` now records non-zero `keeperChosen`, `keeperMerged`, and `supersededClosedCount`
+- actionable Maven metrics remain meaningful while keeper outcomes are visible in the same snapshot
+
+3. Axum remains stable under the new keeper/reporting codepath.
+- the live Axum run stayed `completed`
+- no duplicate PR was created
+- the Stage 11 summary/evidence fields were present on the no-change path
