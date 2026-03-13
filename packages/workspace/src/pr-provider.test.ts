@@ -162,4 +162,75 @@ describe("GitHubPRProvider", () => {
       })
     ).rejects.toMatchObject({ failureKind: "auth" });
   });
+
+  it("posts deterministic comments to pull requests", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 201,
+        json: async () => ({ id: 1 })
+      })
+    );
+
+    const authProvider: GitHubAuthProvider = {
+      getToken: vi.fn().mockResolvedValue("test-token")
+    };
+    const provider = new GitHubPRProvider(authProvider);
+
+    await provider.commentOnPullRequest({
+      project: {
+        id: "p1",
+        name: "demo",
+        type: "github",
+        owner: "acme",
+        repo: "demo",
+        createdAt: new Date().toISOString()
+      },
+      prNumber: 24,
+      body: "Superseded by #25 (keeper for this pilot window)."
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.github.com/repos/acme/demo/issues/24/comments",
+      expect.objectContaining({
+        method: "POST"
+      })
+    );
+  });
+
+  it("closes superseded pull requests", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ state: "closed" })
+      })
+    );
+
+    const authProvider: GitHubAuthProvider = {
+      getToken: vi.fn().mockResolvedValue("test-token")
+    };
+    const provider = new GitHubPRProvider(authProvider);
+
+    await provider.closePullRequest({
+      project: {
+        id: "p1",
+        name: "demo",
+        type: "github",
+        owner: "acme",
+        repo: "demo",
+        createdAt: new Date().toISOString()
+      },
+      prNumber: 24
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.github.com/repos/acme/demo/pulls/24",
+      expect.objectContaining({
+        method: "PATCH"
+      })
+    );
+  });
 });

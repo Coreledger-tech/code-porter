@@ -204,6 +204,7 @@ async function prepareGradleRepo(input: {
   android?: boolean;
   buildFileContent?: string;
   wrapperVersion?: string;
+  gradlePropertiesContent?: string;
 }): Promise<string> {
   const repoPath = await mkdtemp(join(tmpdir(), `${input.repoName}-`));
   await mkdir(join(repoPath, "src", "main", "java"), { recursive: true });
@@ -228,6 +229,13 @@ async function prepareGradleRepo(input: {
         "zipStoreBase=GRADLE_USER_HOME",
         "zipStorePath=wrapper/dists"
       ].join("\n"),
+      "utf8"
+    );
+  }
+  if (typeof input.gradlePropertiesContent === "string") {
+    await writeFile(
+      join(repoPath, "gradle.properties"),
+      input.gradlePropertiesContent,
       "utf8"
     );
   }
@@ -1709,6 +1717,87 @@ describe("API integration", () => {
     }
   });
 
+  it("classifies guarded Android no-op runs explicitly and skips PR creation", async () => {
+    const repoPath = await prepareGradleRepo({
+      repoName: "code-porter-int-stage10-guarded-android-noop",
+      withWrapper: true,
+      android: true,
+      wrapperVersion: "7.6.4",
+      gradlePropertiesContent: [
+        "org.gradle.java.installations.auto-detect=true",
+        "org.gradle.java.installations.auto-download=true"
+      ].join("\n")
+    });
+    cleanupPaths.push(repoPath);
+
+    const project = await apiFetch<{ id: string }>(baseUrl, "/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "integration-gradle-android-stage10-noop",
+        localPath: repoPath
+      })
+    });
+
+    const campaign = await apiFetch<{ id: string }>(baseUrl, "/campaigns", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectId: project.id,
+        policyId: "pilot-stage8",
+        recipePack: "java-gradle-guarded-baseline-pack"
+      })
+    });
+
+    const applyStart = await apiFetch<{ runId: string; status: string }>(
+      baseUrl,
+      `/campaigns/${campaign.id}/apply`,
+      { method: "POST" }
+    );
+
+    const run = await waitForRunTerminal<{
+      status: string;
+      prUrl?: string | null;
+      summary: {
+        failureKind?: string;
+        guardedBaselineNoop?: boolean;
+        guardedBaselineReason?: string;
+        scan?: {
+          gradleProjectType?: string;
+          buildSystemDisposition?: string;
+        };
+      };
+      evidencePath: string;
+      evidenceArtifacts: Array<{ type: string; path: string }>;
+    }>({
+      baseUrl,
+      runId: applyStart.runId
+    });
+
+    expect(run.status).toBe("needs_review");
+    expect(run.prUrl ?? null).toBeNull();
+    expect(run.summary.failureKind).toBe("guarded_baseline_noop");
+    expect(run.summary.guardedBaselineNoop).toBe(true);
+    expect(run.summary.guardedBaselineReason).toContain("already satisfied");
+    expect(run.summary.scan?.gradleProjectType).toBe("android");
+    expect(run.summary.scan?.buildSystemDisposition).toBe("supported");
+
+    const checklistArtifact = JSON.parse(
+      await readFile(
+        findArtifactPath(
+          run.evidenceArtifacts,
+          "merge-checklist.json",
+          join(run.evidencePath, "merge-checklist.json")
+        ),
+        "utf8"
+      )
+    ) as { passed: boolean; advisories?: string[] };
+    expect(checklistArtifact.passed).toBe(true);
+    expect(checklistArtifact.advisories?.some((item) => item.includes("already satisfied"))).toBe(
+      true
+    );
+  });
+
   it("applies Maven compile remediation and records remediation evidence", async () => {
     const repoPath = await prepareLombokProcNoneRepo({
       repoName: "code-porter-int-maven-compile-remediation"
@@ -3015,6 +3104,162 @@ describe("API integration", () => {
 
       expect(run.prUrl).toBe("https://github.com/Coreledger-tech/code-porter/pull/123");
       expect(run.summary.prUrl).toBe("https://github.com/Coreledger-tech/code-porter/pull/123");
+    } finally {
+      if (originalAuthMode === undefined) {
+        delete process.env.GITHUB_AUTH_MODE;
+      } else {
+        process.env.GITHUB_AUTH_MODE = originalAuthMode;
+      }
+      if (originalToken === undefined) {
+        delete process.env.GITHUB_TOKEN;
+      } else {
+        process.env.GITHUB_TOKEN = originalToken;
+      }
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps only one open keeper PR per project/base branch and closes superseded PRs", async () => {
+    const remoteRepo = await prepareMavenRepo({ repoName: "code-porter-int-stage10-keeper-remote" });
+    cleanupPaths.push(remoteRepo);
+    const remoteDefaultBranch = await runGitStdout(remoteRepo, ["rev-parse", "--abbrev-ref", "HEAD"]);
+
+    const originalAuthMode = process.env.GITHUB_AUTH_MODE;
+    const originalToken = process.env.GITHUB_TOKEN;
+    process.env.GITHUB_AUTH_MODE = "pat";
+    process.env.GITHUB_TOKEN = "integration-token";
+    const realFetch = global.fetch;
+
+    let nextPrNumber = 100;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.startsWith("http://127.0.0.1")) {
+        return realFetch(input, init);
+      }
+
+      if (url.includes("api.github.com/repos/Coreledger-tech/code-porter/pulls") && init?.method === "POST") {
+        nextPrNumber += 1;
+        return new Response(
+          JSON.stringify({
+            html_url: `https://github.com/Coreledger-tech/code-porter/pull/${nextPrNumber}`,
+            number: nextPrNumber
+          }),
+          {
+            status: 201,
+            headers: { "content-type": "application/json" }
+          }
+        );
+      }
+
+      if (url.includes("api.github.com/repos/Coreledger-tech/code-porter/issues/101/comments")) {
+        return new Response(JSON.stringify({ id: 1 }), {
+          status: 201,
+          headers: { "content-type": "application/json" }
+        });
+      }
+
+      if (url.includes("api.github.com/repos/Coreledger-tech/code-porter/pulls/101") && init?.method === "PATCH") {
+        return new Response(JSON.stringify({ number: 101, state: "closed" }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      }
+
+      return new Response(JSON.stringify({ default_branch: "main" }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const project = await apiFetch<{ id: string }>(baseUrl, "/projects/github", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "github-stage10-keeper",
+          owner: "Coreledger-tech",
+          repo: "code-porter",
+          cloneUrl: remoteRepo,
+          defaultBranch: remoteDefaultBranch
+        })
+      });
+
+      const campaign = await apiFetch<{ id: string }>(baseUrl, "/campaigns", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: project.id,
+          policyId: "default",
+          recipePack: "java-maven-core",
+          targetSelector: remoteDefaultBranch
+        })
+      });
+
+      const firstApply = await apiFetch<{ runId: string; status: string }>(
+        baseUrl,
+        `/campaigns/${campaign.id}/apply`,
+        { method: "POST" }
+      );
+      const firstRun = await waitForRunTerminal<{
+        status: string;
+        prUrl?: string | null;
+        prState?: string | null;
+        summary: {
+          keeperCandidate?: boolean;
+          supersededByPrNumber?: number | null;
+          mergeChecklist?: { passed: boolean; reasons: string[] };
+        };
+      }>({
+        baseUrl,
+        runId: firstApply.runId
+      });
+
+      expect(firstRun.prUrl).toBe("https://github.com/Coreledger-tech/code-porter/pull/101");
+      expect(firstRun.summary.mergeChecklist?.passed).toBe(true);
+
+      const secondApply = await apiFetch<{ runId: string; status: string }>(
+        baseUrl,
+        `/campaigns/${campaign.id}/apply`,
+        { method: "POST" }
+      );
+      const secondRun = await waitForRunTerminal<{
+        status: string;
+        prUrl?: string | null;
+        prState?: string | null;
+        summary: {
+          keeperCandidate?: boolean;
+          supersededByPrNumber?: number | null;
+          mergeChecklist?: { passed: boolean; reasons: string[] };
+        };
+      }>({
+        baseUrl,
+        runId: secondApply.runId
+      });
+
+      const refreshedFirstRun = await apiFetch<{
+        prState?: string | null;
+        summary: {
+          keeperCandidate?: boolean;
+          supersededByPrNumber?: number | null;
+        };
+      }>(baseUrl, `/runs/${firstApply.runId}`);
+
+      expect(secondRun.prUrl).toBe("https://github.com/Coreledger-tech/code-porter/pull/102");
+      expect(secondRun.summary.keeperCandidate).toBe(true);
+      expect(secondRun.summary.supersededByPrNumber ?? null).toBeNull();
+      expect(refreshedFirstRun.prState).toBe("closed");
+      expect(refreshedFirstRun.summary.keeperCandidate).toBe(false);
+      expect(refreshedFirstRun.summary.supersededByPrNumber).toBe(102);
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining("/issues/101/comments"),
+        expect.objectContaining({ method: "POST" })
+      );
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining("/pulls/101"),
+        expect.objectContaining({ method: "PATCH" })
+      );
     } finally {
       if (originalAuthMode === undefined) {
         delete process.env.GITHUB_AUTH_MODE;
