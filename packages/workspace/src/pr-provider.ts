@@ -75,6 +75,40 @@ async function pushBranch(workspacePath: string, branchName: string): Promise<vo
   }
 }
 
+async function fetchGitHubApi(input: {
+  apiUrl: string;
+  token: string;
+  path: string;
+  method: string;
+  body?: Record<string, unknown>;
+  authFailureMessage: string;
+  failureMessage: string;
+}): Promise<Response> {
+  const response = await fetch(`${input.apiUrl.replace(/\/+$/, "")}${input.path}`, {
+    method: input.method,
+    headers: {
+      Authorization: `Bearer ${input.token}`,
+      Accept: "application/vnd.github+json",
+      "Content-Type": "application/json",
+      "User-Agent": "code-porter"
+    },
+    ...(input.body ? { body: JSON.stringify(input.body) } : {})
+  });
+
+  if (response.status === 401 || response.status === 403) {
+    throw new RepoOperationError(input.authFailureMessage, "auth");
+  }
+
+  if (!response.ok) {
+    throw new RepoOperationError(
+      `${input.failureMessage} (status ${response.status})`,
+      "repo_write"
+    );
+  }
+
+  return response;
+}
+
 export class GitHubPRProvider implements PRProviderPort {
   constructor(
     private readonly authProvider: GitHubAuthProvider = createGitHubAuthProvider(),
@@ -116,15 +150,14 @@ export class GitHubPRProvider implements PRProviderPort {
 
     await pushBranch(input.workspacePath, input.branchName);
 
-    const response = await fetch(`${this.apiUrl.replace(/\/+$/, "")}/repos/${repoApiPath(input.project)}/pulls`, {
+    const response = await fetchGitHubApi({
+      apiUrl: this.apiUrl,
+      token,
+      path: `/repos/${repoApiPath(input.project)}/pulls`,
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/vnd.github+json",
-        "Content-Type": "application/json",
-        "User-Agent": "code-porter"
-      },
-      body: JSON.stringify({
+      authFailureMessage: "GitHub authentication failed while creating pull request",
+      failureMessage: "GitHub pull request creation failed",
+      body: {
         title: `Code Porter run ${input.runId}`,
         head: input.branchName,
         base: input.baseBranch,
@@ -136,22 +169,8 @@ export class GitHubPRProvider implements PRProviderPort {
           confidenceScore: input.confidenceScore,
           blockedReason: input.blockedReason
         })
-      })
+      }
     });
-
-    if (response.status === 401 || response.status === 403) {
-      throw new RepoOperationError(
-        "GitHub authentication failed while creating pull request",
-        "auth"
-      );
-    }
-
-    if (!response.ok) {
-      throw new RepoOperationError(
-        `GitHub pull request creation failed (status ${response.status})`,
-        "repo_write"
-      );
-    }
 
     const payload = (await response.json()) as { html_url?: string; number?: number };
     if (!payload.html_url) {
@@ -165,5 +184,64 @@ export class GitHubPRProvider implements PRProviderPort {
       prUrl: payload.html_url,
       prNumber: Number.isInteger(payload.number) ? payload.number : null
     };
+  }
+
+  async commentOnPullRequest(input: {
+    project: Project;
+    prNumber: number;
+    body: string;
+  }): Promise<void> {
+    let token: string;
+    try {
+      token = await this.authProvider.getToken();
+    } catch (error) {
+      throw new RepoOperationError(
+        error instanceof Error
+          ? error.message
+          : "GitHub authentication token is missing",
+        "auth"
+      );
+    }
+
+    await fetchGitHubApi({
+      apiUrl: this.apiUrl,
+      token,
+      path: `/repos/${repoApiPath(input.project)}/issues/${input.prNumber}/comments`,
+      method: "POST",
+      authFailureMessage: "GitHub authentication failed while commenting on pull request",
+      failureMessage: "GitHub pull request comment failed",
+      body: {
+        body: input.body
+      }
+    });
+  }
+
+  async closePullRequest(input: {
+    project: Project;
+    prNumber: number;
+  }): Promise<void> {
+    let token: string;
+    try {
+      token = await this.authProvider.getToken();
+    } catch (error) {
+      throw new RepoOperationError(
+        error instanceof Error
+          ? error.message
+          : "GitHub authentication token is missing",
+        "auth"
+      );
+    }
+
+    await fetchGitHubApi({
+      apiUrl: this.apiUrl,
+      token,
+      path: `/repos/${repoApiPath(input.project)}/pulls/${input.prNumber}`,
+      method: "PATCH",
+      authFailureMessage: "GitHub authentication failed while closing pull request",
+      failureMessage: "GitHub pull request close failed",
+      body: {
+        state: "closed"
+      }
+    });
   }
 }

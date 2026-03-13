@@ -32,11 +32,17 @@ export type RunFailureKind =
   | "workspace_cleanup"
   | "manual_review_required"
   | "guarded_baseline_applied"
+  | "guarded_baseline_noop"
   | "unsupported_build_system"
   | "budget_guardrail"
   | "cancelled"
   | "retry_exhausted"
   | "lease_reclaimed";
+
+export interface MergeChecklistSummary {
+  passed: boolean;
+  reasons: string[];
+}
 export type VerifyFailureKind =
   | "code_compile_failure"
   | "code_test_failure"

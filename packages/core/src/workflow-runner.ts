@@ -272,6 +272,15 @@ export interface PRProviderPort {
     confidenceScore: number | null;
     blockedReason?: string;
   }): Promise<{ prUrl: string; prNumber?: number | null }>;
+  commentOnPullRequest(input: {
+    project: Project;
+    prNumber: number;
+    body: string;
+  }): Promise<void>;
+  closePullRequest(input: {
+    project: Project;
+    prNumber: number;
+  }): Promise<void>;
 }
 
 export interface WorkflowRunner {

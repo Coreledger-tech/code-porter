@@ -1,16 +1,19 @@
-import { randomUUID } from "node:crypto";
-import { resolve } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { executeWorkflow } from "@code-porter/core/src/workflow/index.js";
 import { YamlPolicyEngine } from "@code-porter/core/src/policy.js";
 import type {
   Campaign,
+  MergeChecklistSummary,
   RunEventLevel,
   RunEventType,
   Project,
   Run,
   RunFailureKind,
   RunMode,
-  RunStatus
+  RunStatus,
+  ScanResult
 } from "@code-porter/core/src/models.js";
 import type { EvidenceStorePort, PreparedWorkspace, WorkspaceCleanupPolicy } from "@code-porter/core/src/workflow-runner.js";
 import {
@@ -49,6 +52,16 @@ import {
 import { GradleJava17BaselineRecipe } from "@code-porter/recipes/src/recipes/gradle-java17-baseline.js";
 import { GradleWrapperJava17MinRecipe } from "@code-porter/recipes/src/recipes/gradle-wrapper-java17-min.js";
 import { GradleGuardedPropertiesBaselineRecipe } from "@code-porter/recipes/src/recipes/gradle-guarded-properties-baseline.js";
+import {
+  chooseKeeperCandidate,
+  buildSupersededComment,
+  inferChecklist,
+  type KeeperCandidate
+} from "./pr-keeper.js";
+import {
+  evaluateMergeChecklist,
+  type MergeChecklistArtifact
+} from "./merge-checklist.js";
 import {
   createGitHubAuthProvider,
   GitHubPRProvider,
@@ -122,6 +135,16 @@ interface RunJobStatusRow {
   status: "queued" | "running" | "completed" | "failed" | "cancelled";
 }
 
+interface KeeperCandidateRow {
+  id: string;
+  status: RunStatus;
+  pr_url: string;
+  pr_number: number | null;
+  pr_state: "open" | "merged" | "closed" | null;
+  finished_at: string | null;
+  summary: Record<string, unknown>;
+}
+
 interface EventInsertInput {
   level: RunEventLevel;
   eventType: RunEventType;
@@ -187,6 +210,158 @@ function parsePrNumberFromUrl(prUrl: string): number | null {
 
   const value = Number(match[1]);
   return Number.isInteger(value) ? value : null;
+}
+
+function sha256(value: Buffer): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function resolveArtifactRoot(input: {
+  evidenceRoot: string;
+  projectId: string;
+  campaignId: string;
+  runId: string;
+}): string {
+  return resolve(input.evidenceRoot, input.projectId, input.campaignId, input.runId);
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+}
+
+function normalizeMergeChecklistSummary(
+  summary: Record<string, unknown>,
+  checklist?: MergeChecklistSummary
+): Record<string, unknown> {
+  return {
+    ...summary,
+    keeperCandidate:
+      typeof summary.keeperCandidate === "boolean" ? summary.keeperCandidate : false,
+    supersededByPrNumber:
+      typeof summary.supersededByPrNumber === "number" ? summary.supersededByPrNumber : null,
+    ...(checklist ? { mergeChecklist: checklist } : {})
+  };
+}
+
+async function writeSupplementalEvidenceArtifact(input: {
+  evidenceWriter: FileEvidenceWriter;
+  evidenceRoot: string;
+  projectId: string;
+  campaignId: string;
+  runId: string;
+  artifactType: string;
+  data: unknown;
+}): Promise<{
+  type: string;
+  path: string;
+  sha256: string;
+  storageType: "local_fs";
+  bucket: null;
+  objectKey: null;
+}> {
+  const path = await input.evidenceWriter.write(
+    {
+      projectId: input.projectId,
+      campaignId: input.campaignId,
+      runId: input.runId,
+      evidenceRoot: input.evidenceRoot
+    },
+    input.artifactType,
+    input.data
+  );
+
+  const buffer = await readFile(path);
+  return {
+    type: input.artifactType,
+    path,
+    sha256: sha256(buffer),
+    storageType: "local_fs",
+    bucket: null,
+    objectKey: null
+  };
+}
+
+function toKeeperCandidate(
+  row: KeeperCandidateRow
+): KeeperCandidate | null {
+  const prNumber = row.pr_number ?? parsePrNumberFromUrl(row.pr_url);
+  if (!prNumber) {
+    return null;
+  }
+
+  const summary = asRecord(row.summary);
+  return {
+    runId: row.id,
+    prNumber,
+    prUrl: row.pr_url,
+    status: row.status,
+    mergeChecklist: inferChecklist(summary, row.status),
+    changedFiles: Number(summary.changedFiles ?? 0),
+    changedLines: Number(summary.changedLines ?? 0),
+    finishedAt: row.finished_at
+  };
+}
+
+async function loadOpenKeeperCandidates(input: {
+  projectId: string;
+  baseBranch: string;
+  excludeRunId: string;
+}): Promise<KeeperCandidateRow[]> {
+  const result = await query<KeeperCandidateRow>(
+    `select r.id,
+            r.status,
+            r.pr_url,
+            r.pr_number,
+            r.pr_state,
+            r.finished_at::text,
+            coalesce(r.summary, '{}'::jsonb) as summary
+     from runs r
+     join campaigns c on c.id = r.campaign_id
+     where c.project_id = $1
+       and r.id <> $2
+       and r.pr_url is not null
+       and coalesce(r.pr_state, 'open') = 'open'
+       and coalesce(r.summary#>>'{workspace,defaultBranch}', '') = $3
+       and r.status in ('completed', 'needs_review', 'blocked', 'failed', 'cancelled')`,
+    [input.projectId, input.excludeRunId, input.baseBranch]
+  );
+
+  return result.rows;
+}
+
+async function markSupersededRun(input: {
+  runId: string;
+  keeperPrNumber: number;
+  keeperPrUrl: string;
+}): Promise<void> {
+  const state = await getRunState(input.runId);
+  const summary = asRecord(state?.summary);
+  const nextSummary = {
+    ...summary,
+    prState: "closed",
+    keeperCandidate: false,
+    supersededByPrNumber: input.keeperPrNumber
+  };
+
+  await query(
+    `update runs
+     set pr_state = 'closed',
+         closed_at = coalesce(closed_at, now()),
+         summary = $2::jsonb
+     where id = $1`,
+    [input.runId, JSON.stringify(redactUnknown(nextSummary))]
+  );
+
+  await appendRunEvent(input.runId, {
+    level: "info",
+    eventType: "lifecycle",
+    step: "pr_keeper",
+    message: `Pull request superseded by #${input.keeperPrNumber}`,
+    payload: {
+      keeperPrNumber: input.keeperPrNumber,
+      keeperPrUrl: input.keeperPrUrl
+    }
+  });
 }
 
 const DEFAULT_RECIPE_PACK = "java-maven-plugin-modernize";
@@ -1094,6 +1269,7 @@ export async function executeRunById(
     finalSummary = { ...workflowResult.summary };
     finalConfidenceScore = workflowResult.confidenceScore?.score ?? null;
     finalBranchName = workflowResult.branchName ?? workspace.branchName ?? null;
+    finalSummary = normalizeMergeChecklistSummary(finalSummary);
     manifestArtifacts = [
       ...workflowResult.manifest.artifacts.map((artifact) => ({
         type: artifact.type,
@@ -1113,6 +1289,80 @@ export async function executeRunById(
       })))
     ];
 
+    if (run.mode === "apply" && workflowResult.verifySummary) {
+      await appendRunEvent(run.id, {
+        level: "info",
+        eventType: "step_start",
+        step: "merge_checklist",
+        message: "Evaluating merge checklist"
+      });
+
+      const checklistPolicy = await new YamlPolicyEngine().load(
+        resolve(process.cwd(), context.policy_config_path)
+      );
+      const artifactRoot = resolveArtifactRoot({
+        evidenceRoot,
+        projectId: project.id,
+        campaignId: campaign.id,
+        runId: run.id
+      });
+      const scanResult = JSON.parse(
+        await readFile(join(artifactRoot, "scan.json"), "utf8")
+      ) as ScanResult;
+      const apply = extractApplySummary(workflowResult.summary);
+      const checklist = await evaluateMergeChecklist({
+        workspacePath: workspace.workspacePath,
+        evidencePath: artifactRoot,
+        commitBefore: workspace.commitBefore,
+        commitAfter: apply.commitAfter,
+        changedFiles: apply.changedFiles,
+        changedLines: apply.changedLines,
+        policy: checklistPolicy,
+        scan: scanResult,
+        verifySummary: workflowResult.verifySummary,
+        summary: workflowResult.summary
+      });
+
+      finalSummary = normalizeMergeChecklistSummary(finalSummary, checklist.summary);
+      manifestArtifacts.push(
+        await writeSupplementalEvidenceArtifact({
+          evidenceWriter,
+          evidenceRoot,
+          projectId: project.id,
+          campaignId: campaign.id,
+          runId: run.id,
+          artifactType: "merge-checklist.json",
+          data: checklist.artifact
+        })
+      );
+
+      if (!checklist.summary.passed) {
+        if (finalStatus === "completed") {
+          finalStatus = "needs_review";
+        }
+        finalSummary = {
+          ...finalSummary,
+          ...(typeof finalSummary.failureKind === "string"
+            ? {}
+            : { failureKind: "manual_review_required" }),
+          prCreationSkippedReason: `Merge checklist failed: ${checklist.summary.reasons.join("; ")}`
+        };
+      }
+
+      await appendRunEvent(run.id, {
+        level: checklist.summary.passed ? "info" : "warn",
+        eventType: checklist.summary.passed ? "step_end" : "warning",
+        step: "merge_checklist",
+        message: checklist.summary.passed
+          ? "Merge checklist passed"
+          : "Merge checklist failed",
+        payload: {
+          passed: checklist.summary.passed,
+          reasons: checklist.summary.reasons
+        }
+      });
+    }
+
     if (project.type === "github" && run.mode === "apply" && finalBranchName) {
       const cancellationBeforePr = await getRunCancellationState(run.id);
       if (cancellationBeforePr.cancelled) {
@@ -1124,7 +1374,8 @@ export async function executeRunById(
 
       const apply = extractApplySummary(workflowResult.summary);
 
-      if (apply.commitAfter) {
+      const mergeChecklist = inferChecklist(finalSummary, finalStatus);
+      if (apply.commitAfter && mergeChecklist.passed) {
         await appendRunEvent(run.id, {
           level: "info",
           eventType: "step_start",
@@ -1160,6 +1411,79 @@ export async function executeRunById(
           finalSummary.prNumber = finalPrNumber;
         }
 
+        if (finalPrNumber !== null) {
+          const existingCandidates = (await loadOpenKeeperCandidates({
+            projectId: project.id,
+            baseBranch: workspace.defaultBranch,
+            excludeRunId: run.id
+          }))
+            .map((row) => toKeeperCandidate(row))
+            .filter((candidate): candidate is KeeperCandidate => candidate !== null);
+          const currentCandidate: KeeperCandidate = {
+            runId: run.id,
+            prNumber: finalPrNumber,
+            prUrl: pr.prUrl,
+            status: finalStatus,
+            mergeChecklist,
+            changedFiles: apply.changedFiles,
+            changedLines: apply.changedLines,
+            finishedAt: finalSummary.finishedAt as string | undefined
+          };
+          const keeper = chooseKeeperCandidate([...existingCandidates, currentCandidate]);
+          finalSummary.keeperCandidate = keeper.runId === run.id;
+          finalSummary.supersededByPrNumber = keeper.runId === run.id ? null : keeper.prNumber;
+
+          const prProvider = new GitHubPRProvider(githubAuthProvider);
+
+          for (const candidate of existingCandidates) {
+            if (candidate.runId === keeper.runId) {
+              continue;
+            }
+
+            try {
+              await prProvider.commentOnPullRequest({
+                project,
+                prNumber: candidate.prNumber,
+                body: buildSupersededComment(keeper.prNumber)
+              });
+              await prProvider.closePullRequest({
+                project,
+                prNumber: candidate.prNumber
+              });
+              await markSupersededRun({
+                runId: candidate.runId,
+                keeperPrNumber: keeper.prNumber,
+                keeperPrUrl: keeper.prUrl
+              });
+            } catch (error) {
+              finalSummary.keeperAutomationWarning = redactSecrets(
+                error instanceof Error ? error.message : String(error)
+              );
+            }
+          }
+
+          if (keeper.runId !== run.id) {
+            try {
+              await prProvider.commentOnPullRequest({
+                project,
+                prNumber: finalPrNumber,
+                body: buildSupersededComment(keeper.prNumber)
+              });
+              await prProvider.closePullRequest({
+                project,
+                prNumber: finalPrNumber
+              });
+              finalPrState = "closed";
+              finalClosedAt = nowIso();
+              finalSummary.prState = "closed";
+            } catch (error) {
+              finalSummary.keeperAutomationWarning = redactSecrets(
+                error instanceof Error ? error.message : String(error)
+              );
+            }
+          }
+        }
+
         await appendRunEvent(run.id, {
           level: "info",
           eventType: "step_end",
@@ -1167,6 +1491,16 @@ export async function executeRunById(
           message: "GitHub pull request created",
           payload: {
             prUrl: pr.prUrl
+          }
+        });
+      } else if (apply.commitAfter && !mergeChecklist.passed) {
+        await appendRunEvent(run.id, {
+          level: "warn",
+          eventType: "warning",
+          step: "pr_create",
+          message: "Pull request creation skipped because merge checklist failed",
+          payload: {
+            reasons: mergeChecklist.reasons
           }
         });
       }
