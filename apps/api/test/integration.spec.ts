@@ -485,6 +485,48 @@ async function waitForRunStatus<T extends {
   );
 }
 
+async function waitForRunEvent(
+  input: {
+    baseUrl: string;
+    runId: string;
+    timeoutMs?: number;
+  },
+  predicate: (event: {
+    eventType: string;
+    step: string | null;
+    message: string;
+  }) => boolean
+): Promise<{
+  eventType: string;
+  step: string | null;
+  message: string;
+}> {
+  const deadline = Date.now() + (input.timeoutMs ?? 30000);
+  let afterId = 0;
+
+  while (Date.now() < deadline) {
+    const response = await apiFetch<{
+      events: Array<{
+        eventType: string;
+        step: string | null;
+        message: string;
+      }>;
+      nextAfterId: number;
+    }>(input.baseUrl, `/runs/${input.runId}/events?afterId=${afterId}&limit=200`);
+
+    for (const event of response.events) {
+      if (predicate(event)) {
+        return event;
+      }
+    }
+
+    afterId = response.nextAfterId;
+    await sleep(200);
+  }
+
+  throw new Error(`Timed out waiting for matching run event for ${input.runId}`);
+}
+
 describe("API integration", () => {
   const hostPort = process.env.POSTGRES_HOST_PORT ?? "5433";
   const baseDbUrl =
@@ -2196,6 +2238,164 @@ describe("API integration", () => {
     }
   });
 
+  it("chains Chronicle runtime remediation when java.nio rerun times out and still exposes java.lang", async () => {
+    const repoPath = await prepareMavenTestRuntimeRepo({
+      repoName: "code-porter-int-maven-test-runtime-chronicle-chained"
+    });
+    cleanupPaths.push(repoPath);
+
+    const fakeBin = await mkdtemp(
+      join(tmpdir(), "code-porter-fake-mvn-runtime-chronicle-chained-")
+    );
+    cleanupPaths.push(fakeBin);
+    const mvnScript = join(fakeBin, "mvn");
+    await writeFile(
+      mvnScript,
+      [
+        "#!/bin/sh",
+        "set -eu",
+        "ARGS=\"$*\"",
+        "if echo \"$ARGS\" | grep -q \"dependency:resolve-plugins\"; then",
+        "  exit 0",
+        "fi",
+        "if echo \"$ARGS\" | grep -q -- \"-DskipTests compile\"; then",
+        "  exit 0",
+        "fi",
+        "if echo \"$ARGS\" | grep -q \" test\"; then",
+        "  if grep -q -- \"--add-opens=java.base/java.lang=ALL-UNNAMED\" pom.xml; then",
+        "    echo \"tests ok\"",
+        "    exit 0",
+        "  fi",
+        "  if grep -q -- \"--add-opens=java.base/java.nio=ALL-UNNAMED\" pom.xml; then",
+        "    echo \"java.lang.ExceptionInInitializerError\"",
+        "    echo \"Caused by: java.lang.reflect.InaccessibleObjectException: Unable to make field private java.lang.String java.lang.Throwable.detailMessage accessible\"",
+        "    echo \"module java.base does not \\\"opens java.lang\\\" to unnamed module\"",
+        "    echo \"at net.openhft.chronicle.wire.WireInternal.<clinit>(WireInternal.java:52)\"",
+        "    sleep 5",
+        "    exit 1",
+        "  fi",
+        "  echo \"java.lang.NoSuchFieldException: address\"",
+        "  echo \"at net.openhft.chronicle.bytes.internal.NativeBytesStore\"",
+        "  exit 1",
+        "fi",
+        "exit 0"
+      ].join("\n"),
+      "utf8"
+    );
+    await execFileAsync("chmod", ["+x", mvnScript]);
+
+    const originalPath = process.env.PATH;
+    const originalVerifyTestTimeoutMs = process.env.VERIFY_TEST_TIMEOUT_MS;
+    process.env.PATH = `${fakeBin}:${originalPath ?? ""}`;
+    process.env.VERIFY_TEST_TIMEOUT_MS = "2000";
+
+    try {
+      const project = await apiFetch<{ id: string }>(baseUrl, "/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "integration-maven-test-runtime-chronicle-chained",
+          localPath: repoPath
+        })
+      });
+
+      const campaign = await apiFetch<{ id: string }>(baseUrl, "/campaigns", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: project.id,
+          policyId: "pilot-stage8",
+          recipePack: "java-maven-test-compat-stage8-pack"
+        })
+      });
+
+      const applyStart = await apiFetch<{ runId: string; status: string }>(
+        baseUrl,
+        `/campaigns/${campaign.id}/apply`,
+        { method: "POST" }
+      );
+
+      const run = await waitForRunTerminal<{
+        status: string;
+        evidencePath: string;
+        evidenceArtifacts: Array<{ type: string; path: string }>;
+        summary: {
+          applySummary?: {
+            remediation?: {
+              rulesApplied?: string[];
+            };
+          };
+          failureKind?: string;
+        };
+      }>({
+        baseUrl,
+        runId: applyStart.runId,
+        timeoutMs: 2 * 60 * 1000
+      });
+
+      expect(["completed", "needs_review"]).toContain(run.status);
+      expect(run.summary.applySummary?.remediation?.rulesApplied).toEqual([
+        "ensure_add_opens_java_nio",
+        "ensure_add_opens_java_lang"
+      ]);
+      expect(run.summary.failureKind).not.toBe("java17_module_access_test_failure");
+      expect(run.summary.failureKind).not.toBe("verify_timeout");
+
+      const verifyArtifact = JSON.parse(
+        await readFile(
+          findArtifactPath(
+            run.evidenceArtifacts,
+            "verify.json",
+            join(run.evidencePath, "verify.json")
+          ),
+          "utf8"
+        )
+      ) as { tests: { status: string } };
+      expect(verifyArtifact.tests.status).toBe("passed");
+
+      const remediationArtifact = JSON.parse(
+        await readFile(
+          findArtifactPath(
+            run.evidenceArtifacts,
+            "remediation-test-runtime.json",
+            join(run.evidencePath, "remediation-test-runtime.json")
+          ),
+          "utf8"
+        )
+      ) as {
+        iterations?: Array<{ ruleId?: string; triggerFailureKind?: string }>;
+      };
+      expect(remediationArtifact.iterations).toEqual([
+        expect.objectContaining({
+          ruleId: "ensure_add_opens_java_nio",
+          triggerFailureKind: "java17_module_access_test_failure"
+        }),
+        expect.objectContaining({
+          ruleId: "ensure_add_opens_java_lang",
+          triggerFailureKind: "verify_timeout"
+        })
+      ]);
+
+      expect(
+        run.evidenceArtifacts.some(
+          (artifact) => artifact.type === "artifacts/remediation-test-runtime-1.patch"
+        )
+      ).toBe(true);
+      expect(
+        run.evidenceArtifacts.some(
+          (artifact) => artifact.type === "artifacts/remediation-test-runtime-2.patch"
+        )
+      ).toBe(true);
+    } finally {
+      process.env.PATH = originalPath;
+      if (originalVerifyTestTimeoutMs === undefined) {
+        delete process.env.VERIFY_TEST_TIMEOUT_MS;
+      } else {
+        process.env.VERIFY_TEST_TIMEOUT_MS = originalVerifyTestTimeoutMs;
+      }
+    }
+  });
+
   it("writes retrieval context evidence on verify failures when semantic retrieval is enabled", async () => {
     const repoPath = await prepareMavenTestRuntimeRepo({
       repoName: "code-porter-int-semantic-retrieval"
@@ -2539,63 +2739,127 @@ describe("API integration", () => {
   it("cancels a running run and reaches cancelled terminal state", async () => {
     const repoPath = await prepareMavenRepo({ repoName: "code-porter-int-cancel" });
     cleanupPaths.push(repoPath);
-
-    const project = await apiFetch<{ id: string }>(baseUrl, "/projects", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: "integration-cancel",
-        localPath: repoPath
-      })
-    });
-
-    const campaign = await apiFetch<{ id: string }>(baseUrl, "/campaigns", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        projectId: project.id,
-        policyId: "default",
-        recipePack: "java-maven-core"
-      })
-    });
-
-    const apply = await apiFetch<{ runId: string; status: string }>(
-      baseUrl,
-      `/campaigns/${campaign.id}/apply`,
-      { method: "POST" }
+    const fakeBin = await mkdtemp(join(tmpdir(), "code-porter-int-cancel-fake-mvn-"));
+    cleanupPaths.push(fakeBin);
+    const mvnScript = join(fakeBin, "mvn");
+    await writeFile(
+      mvnScript,
+      [
+        "#!/bin/sh",
+        "set -eu",
+        "ARGS=\"$*\"",
+        "if echo \"$ARGS\" | grep -q \"dependency:resolve-plugins\"; then",
+        "  exit 0",
+        "fi",
+        "if echo \"$ARGS\" | grep -q -- \"-DskipTests compile\"; then",
+        "  echo \"compile ok\"",
+        "  exit 0",
+        "fi",
+        "if echo \"$ARGS\" | grep -q \" test\"; then",
+        "  echo \"hung verify start\"",
+        "  trap '' TERM INT",
+        "  while :; do sleep 1; done",
+        "fi",
+        "exit 0"
+      ].join("\n"),
+      "utf8"
     );
-    expect(apply.status).toBe("queued");
+    await execFileAsync("chmod", ["+x", mvnScript]);
+    const originalPath = process.env.PATH;
+    const originalTestTimeout = process.env.VERIFY_TEST_TIMEOUT_MS;
+    process.env.PATH = `${fakeBin}:${originalPath ?? ""}`;
+    process.env.VERIFY_TEST_TIMEOUT_MS = "60000";
 
-    await waitForRunStatus({
-      baseUrl,
-      runId: apply.runId,
-      expectedStatuses: ["running", "needs_review", "blocked", "completed", "failed"]
-    });
+    try {
+      const project = await apiFetch<{ id: string }>(baseUrl, "/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "integration-cancel",
+          localPath: repoPath
+        })
+      });
 
-    const cancel = await apiFetch<{
-      runId: string;
-      status: string;
-      queueStatus: string;
-      message?: string;
-    }>(baseUrl, `/runs/${apply.runId}/cancel`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ reason: "operator cancel test" })
-    });
-    expect(cancel.runId).toBe(apply.runId);
+      const campaign = await apiFetch<{ id: string }>(baseUrl, "/campaigns", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: project.id,
+          policyId: "default",
+          recipePack: "java-maven-core"
+        })
+      });
 
-    const run = await waitForRunTerminal<{
-      status: string;
-      queueStatus: string;
-      summary: Record<string, unknown>;
-    }>({
-      baseUrl,
-      runId: apply.runId
-    });
+      const apply = await apiFetch<{ runId: string; status: string }>(
+        baseUrl,
+        `/campaigns/${campaign.id}/apply`,
+        { method: "POST" }
+      );
+      expect(apply.status).toBe("queued");
 
-    expect(run.status).toBe("cancelled");
-    expect(run.queueStatus).toBe("cancelled");
-    expect(run.summary.cancelRequestedAt).toBeTruthy();
+      await waitForRunEvent(
+        {
+          baseUrl,
+          runId: apply.runId,
+          timeoutMs: 30000
+        },
+        (event) => event.eventType === "step_start" && event.step === "verify"
+      );
+
+      const cancel = await apiFetch<{
+        runId: string;
+        status: string;
+        queueStatus: string;
+        message?: string;
+      }>(baseUrl, `/runs/${apply.runId}/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: "operator cancel test" })
+      });
+      expect(cancel.runId).toBe(apply.runId);
+
+      const run = await waitForRunTerminal<{
+        status: string;
+        queueStatus: string;
+        evidencePath: string;
+        evidenceArtifacts: Array<{ type: string; path: string }>;
+        summary: Record<string, unknown>;
+      }>({
+        baseUrl,
+        runId: apply.runId,
+        timeoutMs: 60000
+      });
+
+      expect(run.status).toBe("cancelled");
+      expect(run.queueStatus).toBe("cancelled");
+      expect(run.summary.cancelRequestedAt).toBeTruthy();
+
+      const verifyArtifact = JSON.parse(
+        await readFile(
+          findArtifactPath(
+            run.evidenceArtifacts,
+            "verify.json",
+            join(run.evidencePath, "verify.json")
+          ),
+          "utf8"
+        )
+      ) as {
+        compile: { status: string };
+        tests: { status: string; aborted?: boolean; reason?: string; output?: string };
+      };
+      expect(verifyArtifact.compile.status).toBe("passed");
+      expect(verifyArtifact.tests.status).toBe("failed");
+      expect(verifyArtifact.tests.aborted).toBe(true);
+      expect(verifyArtifact.tests.reason).toContain("operator cancel test");
+      expect(verifyArtifact.tests.output).toContain("hung verify start");
+    } finally {
+      process.env.PATH = originalPath;
+      if (originalTestTimeout === undefined) {
+        delete process.env.VERIFY_TEST_TIMEOUT_MS;
+      } else {
+        process.env.VERIFY_TEST_TIMEOUT_MS = originalTestTimeout;
+      }
+    }
   });
 
   it("cleanup commands remove stale workspace and evidence cache entries", async () => {

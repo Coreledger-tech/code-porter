@@ -130,7 +130,13 @@ describe("AsyncRunWorker", () => {
     const processed = await worker.processAvailableJobs();
 
     expect(processed).toBe(1);
-    expect(executeRunByIdMock).toHaveBeenCalledWith("run-1", "worker-test");
+    expect(executeRunByIdMock).toHaveBeenCalledWith(
+      "run-1",
+      "worker-test",
+      expect.objectContaining({
+        signal: expect.any(AbortSignal)
+      })
+    );
     expect(completeRunJobMock).toHaveBeenCalledWith({
       runId: "run-1",
       status: "completed",

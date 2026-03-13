@@ -117,6 +117,28 @@ const chronicleJavaLangModuleAccessFailure: VerifySummary = {
   }
 };
 
+const chronicleJavaLangTimeoutFailure: VerifySummary = {
+  buildSystem: "maven",
+  hasTests: true,
+  compile: {
+    status: "passed"
+  },
+  tests: {
+    status: "failed",
+    failureKind: "verify_timeout",
+    reason: "Verification command timed out after 2000ms",
+    output: [
+      "java.lang.ExceptionInInitializerError",
+      "Caused by: java.lang.reflect.InaccessibleObjectException: Unable to make field private java.lang.String java.lang.Throwable.detailMessage accessible:",
+      "module java.base does not \"opens java.lang\" to unnamed module",
+      "at net.openhft.chronicle.wire.WireInternal.<clinit>(WireInternal.java:52)"
+    ].join("\n")
+  },
+  staticChecks: {
+    status: "passed"
+  }
+};
+
 async function initGitRepo(repoPath: string): Promise<void> {
   await execFileAsync("git", ["init"], { cwd: repoPath });
   await execFileAsync("git", ["config", "user.email", "tests@codeporter.local"], { cwd: repoPath });
@@ -454,5 +476,87 @@ describe("MavenTestRuntimeDeterministicRemediator", () => {
     );
     expect(configurationCount).toBe(1);
     expect(result.summary?.rulesApplied).toContain("ensure_add_opens_sun_nio_ch");
+  });
+
+  it("chains Chronicle runtime remediation when java.lang remains after a java.nio timeout rerun", async () => {
+    const pom = [
+      "<project>",
+      "  <build>",
+      "    <plugins>",
+      "      <plugin>",
+      "        <groupId>org.apache.maven.plugins</groupId>",
+      "        <artifactId>maven-surefire-plugin</artifactId>",
+      "        <version>3.2.5</version>",
+      "      </plugin>",
+      "    </plugins>",
+      "  </build>",
+      "</project>"
+    ].join("\n");
+
+    const repoPath = await createRepo(pom);
+    const verifier = {
+      run: vi
+        .fn()
+        .mockResolvedValueOnce(chronicleJavaLangTimeoutFailure)
+        .mockResolvedValueOnce({
+          ...chronicleJavaLangTimeoutFailure,
+          tests: {
+            status: "passed"
+          }
+        })
+    };
+    const chainedPolicy: PolicyConfig = {
+      ...basePolicy,
+      remediation: {
+        ...basePolicy.remediation,
+        mavenTestRuntime: {
+          ...basePolicy.remediation!.mavenTestRuntime!,
+          maxIterations: 2
+        }
+      }
+    };
+
+    const result = await new MavenTestRuntimeDeterministicRemediator().run({
+      scan: {
+        buildSystem: "maven",
+        hasTests: true,
+        metadata: {
+          gitBranch: "main",
+          toolAvailability: { mvn: true, gradle: false, npm: false, node: true },
+          detectedFiles: ["pom.xml"]
+        }
+      },
+      verify: chronicleModuleAccessFailure,
+      repoPath,
+      policy: chainedPolicy,
+      verifier: verifier as any
+    });
+
+    const updatedPom = await readFile(join(repoPath, "pom.xml"), "utf8");
+    expect(updatedPom).toContain("--add-opens=java.base/java.nio=ALL-UNNAMED");
+    expect(updatedPom).toContain("--add-opens=java.base/java.lang=ALL-UNNAMED");
+    expect(updatedPom.match(/--add-opens=java\.base\/java\.nio=ALL-UNNAMED/g)?.length).toBe(1);
+    expect(updatedPom.match(/--add-opens=java\.base\/java\.lang=ALL-UNNAMED/g)?.length).toBe(1);
+    expect(result.summary?.rulesApplied).toEqual([
+      "ensure_add_opens_java_nio",
+      "ensure_add_opens_java_lang"
+    ]);
+    expect(verifier.run).toHaveBeenCalledTimes(2);
+
+    const remediationArtifact = result.artifacts?.find(
+      (artifact) => artifact.type === "remediation-test-runtime.json"
+    )?.data as {
+      iterations?: Array<{ ruleId?: string; triggerFailureKind?: string }>;
+    };
+    expect(remediationArtifact.iterations).toEqual([
+      expect.objectContaining({
+        ruleId: "ensure_add_opens_java_nio",
+        triggerFailureKind: "java17_module_access_test_failure"
+      }),
+      expect.objectContaining({
+        ruleId: "ensure_add_opens_java_lang",
+        triggerFailureKind: "verify_timeout"
+      })
+    ]);
   });
 });

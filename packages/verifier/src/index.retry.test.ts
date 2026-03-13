@@ -110,9 +110,9 @@ describe("DefaultVerifier Maven retries", () => {
         args: ["-U", "-q", "-DskipTests", "compile"]
       },
       repo,
-      {
+      expect.objectContaining({
         timeoutMs: expect.any(Number)
-      }
+      })
     );
   });
 

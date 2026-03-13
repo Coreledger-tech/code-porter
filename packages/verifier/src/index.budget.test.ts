@@ -54,7 +54,7 @@ const basePolicy: PolicyConfig = {
 };
 
 describe("DefaultVerifier budgets", () => {
-  it("classifies timed out verify command as budget_exceeded", async () => {
+  it("classifies timed out verify command as verify_timeout", async () => {
     runCommandMock.mockReset();
     runCommandMock.mockResolvedValueOnce({
       status: "failed",
@@ -96,9 +96,8 @@ describe("DefaultVerifier budgets", () => {
       }
     );
 
-    expect(result.compile.failureKind).toBe("budget_exceeded");
-    expect(result.compile.budgetKey).toBe("maxVerifyMinutesPerRun");
-    expect(result.compile.blockedReason).toContain("maxVerifyMinutesPerRun");
+    expect(result.compile.failureKind).toBe("verify_timeout");
+    expect(result.compile.blockedReason).toContain("timed out");
   });
 
   it("stops retry loop when maxVerifyRetries budget is reached", async () => {
