@@ -670,3 +670,82 @@ This section is intentionally pre-execution and contains expected outcomes only.
 - Stage 8 `cohort=all`: `completed=1`, `needs_review=7`
 - Stage 9 `cohort=all`: `completed=3`, `needs_review=4`
 - Coverage cohort remains explicit: `unsupported_build_system` and `guarded_baseline_applied` account for all non-actionable Stage 9 outcomes.
+
+## Stage 10 Results
+- Stage 10 live validation used the current host runtime on `http://127.0.0.1:3014` under Java 17.
+- Stage 10 report snapshots:
+  - `/tmp/pilot-report-stage10-postmerge-all.json`
+  - `/tmp/pilot-report-stage10-postmerge-actionable.json`
+  - `/tmp/pilot-report-stage10-postmerge-coverage.json`
+
+### Axum Keeper Loop Validation
+- keeper PR outcome was already settled upstream before the live validation run:
+  - keeper PR: `https://github.com/Coreledger-tech/Axum-matching-engine/pull/24`
+  - state: `merged`
+  - mergedAt: `2026-03-13T01:02:35Z`
+  - superseded PR: `https://github.com/Coreledger-tech/Axum-matching-engine/pull/23`
+  - superseded state: `closed` (unmerged)
+- changed file scope for both PRs remained narrow:
+  - `pom.xml` only
+  - GitHub file diff count: `4` changed lines
+- live Axum Stage 10 apply run:
+  - runId: `6438927e-9466-40c8-b0c1-4d3fa2677ce9`
+  - status: `completed`
+  - PR opened: none (`changedFiles=0`, keeper already merged upstream)
+  - evidence root: `/Users/kelvinmusodza/Downloads/Code porter/evidence/7a83b368-e7bf-411c-9f35-6cd36f15d155/f5bb0714-4a89-450d-a695-ace0bca1c341/6438927e-9466-40c8-b0c1-4d3fa2677ce9`
+  - checklist artifact: `/Users/kelvinmusodza/Downloads/Code porter/evidence/7a83b368-e7bf-411c-9f35-6cd36f15d155/f5bb0714-4a89-450d-a695-ace0bca1c341/6438927e-9466-40c8-b0c1-4d3fa2677ce9/merge-checklist.json`
+- live Axum checklist outcome:
+  - `merge-checklist.json` exists
+  - `passed=true`
+  - advisory: `No committed changes were produced; PR creation is not applicable`
+- live Axum summary fields from `/runs/:id`:
+  - `mergeChecklist.passed=true`
+  - `keeperCandidate=false`
+  - `supersededByPrNumber=null`
+- note: the stored `run.json` artifact for this no-change completion still contains `null` for the new keeper/checklist summary fields even though the API summary payload exposes them correctly. The live validation therefore used `/runs/:id` as the authoritative summary surface.
+
+### Android Guarded No-Op Validation
+- live Android guarded no-op run:
+  - runId: `64c0efa4-21cb-428e-9121-cda60f7ff877`
+  - status: `needs_review`
+  - failureKind: `guarded_baseline_noop`
+  - PR opened: none
+  - evidence root: `/Users/kelvinmusodza/Downloads/Code porter/evidence/3334bd17-31d7-4032-9209-ea05772759bf/88a88a21-4a2c-46f1-9470-86ec560ec845/64c0efa4-21cb-428e-9121-cda60f7ff877`
+- validated summary fields:
+  - `guardedBaselineNoop=true`
+  - `guardedBaselineReason=Guarded Android baseline is already satisfied; no deterministic wrapper or gradle.properties changes were required`
+  - `scan.gradleProjectType=android`
+  - `scan.buildSystemDisposition=supported`
+- checklist outcome:
+  - `mergeChecklist.passed=true`
+  - reasons include:
+    - `No committed changes were produced; PR creation is not applicable`
+    - `Guarded Android baseline is already satisfied; no PR is needed`
+
+### Stage 10 Post-Merge Report Snapshots (`window=7d`)
+1. `cohort=all`
+- totalsByStatus: `completed=1`, `needs_review=2`
+- topFailureKinds: `guarded_baseline_noop=1`, `code_test_failure=1`
+- prOutcomes: `opened=0`, `merged=0`, `open=0`, `mergeRate=0`
+
+2. `cohort=actionable_maven`
+- totalsByStatus: `completed=1`, `needs_review=1`
+- topFailureKinds: `code_test_failure=1`
+- `unknown` is absent
+
+3. `cohort=coverage`
+- totalsByStatus: `needs_review=1`
+- topFailureKinds: `guarded_baseline_noop=1`
+- Android guarded no-op is now measurable as a distinct coverage outcome instead of falling back to an unsupported/opaque bucket.
+
+### Stage 10 Delta
+1. Keeper-loop state is now operator-light and explicit.
+- Axum no longer has two open PRs competing in the same pilot window.
+- The keeper (`#24`) is merged and the superseded PR (`#23`) is closed.
+
+2. Merge-checklist evidence is emitted on live runs.
+- Live Axum and Android validations both wrote `merge-checklist.json`.
+- Checklist output stays useful even when no deterministic changes are produced.
+
+3. Android guarded no-op outcomes are explicit and measurable.
+- No-op Android runs now record `guarded_baseline_noop` with a concrete reason and no PR side effects.
