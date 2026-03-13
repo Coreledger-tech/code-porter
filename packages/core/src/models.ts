@@ -12,6 +12,30 @@ export type BuildSystemDisposition =
   | "excluded_by_policy"
   | "unsupported_subtype"
   | "no_supported_manifest";
+export type CoverageOutcome =
+  | "excluded"
+  | "guarded_applied"
+  | "guarded_noop"
+  | "guarded_blocked";
+export type UnsupportedCoverageReason =
+  | "unsupported_build_system_go"
+  | "unsupported_build_system_node"
+  | "unsupported_build_system_python"
+  | "unsupported_build_system_unknown"
+  | "unsupported_subtype_gradle_no_wrapper"
+  | "unsupported_subtype_gradle_unknown"
+  | "unsupported_subtype_android_unguarded"
+  | "excluded_by_policy"
+  | "no_supported_manifest";
+export type CoverageNextLane =
+  | "go_readiness_lane"
+  | "node_readiness_lane"
+  | "python_readiness_lane"
+  | "gradle_jvm_wrapper_lane"
+  | "android_guarded_baseline"
+  | "enable_build_system_in_policy"
+  | "manifest_follow_up"
+  | "manual_triage";
 
 export type RunMode = "plan" | "apply";
 
@@ -256,7 +280,26 @@ export interface ScanResult {
     buildSystemReason?: string;
     gradleWrapperPath?: string | null;
     gradleProjectType?: GradleProjectType | null;
+    unsupportedReason?: UnsupportedCoverageReason | null;
+    recommendedNextLane?: CoverageNextLane | null;
+    coverageOutcome?: CoverageOutcome | null;
   };
+}
+
+export interface CoverageEntry {
+  projectId: string;
+  projectName: string;
+  repo: string | null;
+  runId: string;
+  selectedBuildSystem: BuildSystem;
+  buildSystemDisposition: BuildSystemDisposition;
+  gradleProjectType: GradleProjectType | null;
+  coverageOutcome: CoverageOutcome | null;
+  unsupportedReason: UnsupportedCoverageReason | null;
+  recommendedNextLane: CoverageNextLane | null;
+  failureKind: string | null;
+  blockedReason: string | null;
+  prUrl: string | null;
 }
 
 export interface PlanMetrics {

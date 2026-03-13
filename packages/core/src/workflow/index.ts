@@ -13,6 +13,7 @@ import type {
   VerifySummary
 } from "../models.js";
 import { computeConfidenceScore } from "../scoring.js";
+import { deriveCoverageClassification } from "../coverage-classification.js";
 import {
   countPolicyViolations,
   hasBlockingDecision,
@@ -783,6 +784,14 @@ export async function executeWorkflow(input: {
         : primaryVerifyFailureKind;
   const normalizedFailureKind =
     failureKind ?? (status === "needs_review" ? "manual_review_required" : undefined);
+  const coverageClassification = deriveCoverageClassification({
+    buildSystem: scanResult.buildSystem,
+    buildSystemDisposition: scanResult.metadata.buildSystemDisposition,
+    gradleProjectType: scanResult.metadata.gradleProjectType,
+    gradleWrapperPath: scanResult.metadata.gradleWrapperPath,
+    failureKind: normalizedFailureKind,
+    status
+  });
 
   const workspaceSummary = {
     workspacePath: input.workspace.workspacePath,
@@ -824,6 +833,9 @@ export async function executeWorkflow(input: {
       buildSystemReason: scanResult.metadata.buildSystemReason ?? null,
       gradleWrapperPath: scanResult.metadata.gradleWrapperPath ?? null,
       gradleProjectType: scanResult.metadata.gradleProjectType ?? null,
+      unsupportedReason: coverageClassification.unsupportedReason,
+      recommendedNextLane: coverageClassification.recommendedNextLane,
+      coverageOutcome: coverageClassification.coverageOutcome,
       detectedBuildSystems: scanResult.metadata.detectedBuildSystems ?? [],
       detectedProjects: scanResult.metadata.detectedProjects ?? []
     },
