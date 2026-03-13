@@ -4015,6 +4015,226 @@ describe("API integration", () => {
     expect(invalidCohort.status).toBe(400);
   });
 
+  it("returns repo-level coverage entries with precise unsupported reasons and next-lane hints", async () => {
+    const repoPath = await prepareMavenRepo({ repoName: "code-porter-int-coverage-report" });
+    cleanupPaths.push(repoPath);
+
+    const projects = await Promise.all([
+      apiFetch<{ id: string }>(baseUrl, "/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "coverage-go", localPath: repoPath })
+      }),
+      apiFetch<{ id: string }>(baseUrl, "/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "coverage-node", localPath: repoPath })
+      }),
+      apiFetch<{ id: string }>(baseUrl, "/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "coverage-gradle-no-wrapper", localPath: repoPath })
+      }),
+      apiFetch<{ id: string }>(baseUrl, "/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "coverage-android-unguarded", localPath: repoPath })
+      }),
+      apiFetch<{ id: string }>(baseUrl, "/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "coverage-no-manifest", localPath: repoPath })
+      }),
+      apiFetch<{ id: string }>(baseUrl, "/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "coverage-android-noop", localPath: repoPath })
+      })
+    ]);
+
+    const campaigns = await Promise.all(
+      projects.map((project) =>
+        apiFetch<{ id: string }>(baseUrl, "/campaigns", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            projectId: project.id,
+            policyId: "default",
+            recipePack: "java-maven-core"
+          })
+        })
+      )
+    );
+
+    const runIds = Array.from({ length: 6 }, () => randomUUID());
+    await queryDb(
+      `insert into runs (
+         id, campaign_id, mode, status, confidence_score, evidence_path, branch_name, pr_url,
+         pr_number, pr_state, pr_opened_at, merged_at, closed_at, summary, started_at, finished_at
+       ) values
+       ($1, $7, 'apply', 'needs_review', null, null, null, null, null, null, null, null, null,
+         $8::jsonb, now() - interval '11 hours', now() - interval '10 hours'),
+       ($2, $9, 'apply', 'needs_review', null, null, null, null, null, null, null, null, null,
+         $10::jsonb, now() - interval '10 hours', now() - interval '9 hours'),
+       ($3, $11, 'apply', 'blocked', null, null, null, null, null, null, null, null, null,
+         $12::jsonb, now() - interval '9 hours', now() - interval '8 hours'),
+       ($4, $13, 'apply', 'needs_review', null, null, null, null, null, null, null, null, null,
+         $14::jsonb, now() - interval '8 hours', now() - interval '7 hours'),
+       ($5, $15, 'apply', 'needs_review', null, null, null, null, null, null, null, null, null,
+         $16::jsonb, now() - interval '7 hours', now() - interval '6 hours'),
+       ($6, $17, 'apply', 'needs_review', null, null, null, null, null, null, null, null, null,
+         $18::jsonb, now() - interval '6 hours', now() - interval '5 hours')`,
+      [
+        runIds[0],
+        runIds[1],
+        runIds[2],
+        runIds[3],
+        runIds[4],
+        runIds[5],
+        campaigns[0].id,
+        JSON.stringify({
+          failureKind: "unsupported_build_system",
+          scan: {
+            selectedBuildSystem: "go",
+            buildSystemDisposition: "excluded_by_policy"
+          }
+        }),
+        campaigns[1].id,
+        JSON.stringify({
+          failureKind: "unsupported_build_system",
+          scan: {
+            selectedBuildSystem: "node",
+            buildSystemDisposition: "excluded_by_policy"
+          }
+        }),
+        campaigns[2].id,
+        JSON.stringify({
+          failureKind: "tool_missing",
+          blockedReason: "Gradle wrapper missing; Stage 3 minimal Gradle lane requires wrapper-based builds",
+          scan: {
+            selectedBuildSystem: "gradle",
+            buildSystemDisposition: "supported",
+            gradleProjectType: "jvm",
+            gradleWrapperPath: null
+          }
+        }),
+        campaigns[3].id,
+        JSON.stringify({
+          failureKind: "unsupported_build_system",
+          scan: {
+            selectedBuildSystem: "gradle",
+            buildSystemDisposition: "unsupported_subtype",
+            gradleProjectType: "android"
+          }
+        }),
+        campaigns[4].id,
+        JSON.stringify({
+          failureKind: "unsupported_build_system",
+          scan: {
+            selectedBuildSystem: "unknown",
+            buildSystemDisposition: "no_supported_manifest"
+          }
+        }),
+        campaigns[5].id,
+        JSON.stringify({
+          failureKind: "guarded_baseline_noop",
+          guardedBaselineNoop: true,
+          guardedBaselineReason: "Guarded Android baseline is already satisfied",
+          scan: {
+            selectedBuildSystem: "gradle",
+            buildSystemDisposition: "supported",
+            gradleProjectType: "android",
+            gradleWrapperPath: "gradlew"
+          }
+        })
+      ]
+    );
+
+    const coverage = await apiFetch<{
+      cohort: string;
+      coverageEntries: Array<{
+        projectName: string;
+        coverageOutcome: string | null;
+        unsupportedReason: string | null;
+        recommendedNextLane: string | null;
+      }>;
+      coverageSummary: {
+        byOutcome: Record<string, number>;
+        byReason: Record<string, number>;
+        byRecommendation: Record<string, number>;
+      };
+    }>(baseUrl, "/reports/pilot?window=30d&cohort=coverage");
+
+    expect(coverage.cohort).toBe("coverage");
+    expect(coverage.coverageEntries).toEqual([
+      expect.objectContaining({
+        projectName: "coverage-android-noop",
+        coverageOutcome: "guarded_noop",
+        unsupportedReason: null,
+        recommendedNextLane: null
+      }),
+      expect.objectContaining({
+        projectName: "coverage-android-unguarded",
+        coverageOutcome: "excluded",
+        unsupportedReason: "unsupported_subtype_android_unguarded",
+        recommendedNextLane: "android_guarded_baseline"
+      }),
+      expect.objectContaining({
+        projectName: "coverage-go",
+        coverageOutcome: "excluded",
+        unsupportedReason: "unsupported_build_system_go",
+        recommendedNextLane: "go_readiness_lane"
+      }),
+      expect.objectContaining({
+        projectName: "coverage-gradle-no-wrapper",
+        coverageOutcome: "excluded",
+        unsupportedReason: "unsupported_subtype_gradle_no_wrapper",
+        recommendedNextLane: "gradle_jvm_wrapper_lane"
+      }),
+      expect.objectContaining({
+        projectName: "coverage-no-manifest",
+        coverageOutcome: "excluded",
+        unsupportedReason: "no_supported_manifest",
+        recommendedNextLane: "manifest_follow_up"
+      }),
+      expect.objectContaining({
+        projectName: "coverage-node",
+        coverageOutcome: "excluded",
+        unsupportedReason: "unsupported_build_system_node",
+        recommendedNextLane: "node_readiness_lane"
+      })
+    ]);
+    expect(coverage.coverageSummary.byOutcome).toMatchObject({
+      excluded: 5,
+      guarded_noop: 1
+    });
+    expect(coverage.coverageSummary.byReason).toMatchObject({
+      unsupported_build_system_go: 1,
+      unsupported_build_system_node: 1,
+      unsupported_subtype_gradle_no_wrapper: 1,
+      unsupported_subtype_android_unguarded: 1,
+      no_supported_manifest: 1
+    });
+
+    const actionable = await apiFetch<{
+      cohort: string;
+      coverageEntries: Array<unknown>;
+      coverageSummary: {
+        byOutcome: Record<string, number>;
+        byReason: Record<string, number>;
+        byRecommendation: Record<string, number>;
+      };
+    }>(baseUrl, "/reports/pilot?window=30d&cohort=actionable_maven");
+
+    expect(actionable.cohort).toBe("actionable_maven");
+    expect(actionable.coverageEntries).toEqual([]);
+    expect(actionable.coverageSummary).toEqual({
+      byOutcome: {},
+      byReason: {},
+      byRecommendation: {}
+    });
+  });
+
   it("executes a queued run only once when two workers are active", async () => {
     const repoPath = await prepareMavenRepo({ repoName: "code-porter-int-two-workers" });
     cleanupPaths.push(repoPath);

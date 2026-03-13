@@ -87,6 +87,40 @@ function createMockPilotApi() {
       totalRuns: 10,
       rate: 0.1
     },
+    keeperOutcomes: {
+      keeperChosen: 2,
+      keeperMerged: 1,
+      mergeReady: 2,
+      supersededClosedCount: 1
+    },
+    coverageEntries: [
+      {
+        projectId: "project-5",
+        projectName: "service-5",
+        repo: "service-5",
+        runId: "apply-campaign-5",
+        selectedBuildSystem: "gradle",
+        buildSystemDisposition: "unsupported_subtype",
+        gradleProjectType: "android",
+        coverageOutcome: "excluded",
+        unsupportedReason: "unsupported_subtype_android_unguarded",
+        recommendedNextLane: "android_guarded_baseline",
+        failureKind: "unsupported_build_system",
+        blockedReason: "Android is outside the current lane",
+        prUrl: "https://github.com/org/repo/pull/5"
+      }
+    ],
+    coverageSummary: {
+      byOutcome: {
+        excluded: 1
+      },
+      byReason: {
+        unsupported_subtype_android_unguarded: 1
+      },
+      byRecommendation: {
+        android_guarded_baseline: 1
+      }
+    },
     worstOffendersByProject: []
   };
 
@@ -368,12 +402,26 @@ describe("pilot-run script", () => {
     expect(result.reportSnapshots.actionableMaven.cohort).toBe("actionable_maven");
     expect(result.reportSnapshots.coverage.cohort).toBe("coverage");
     expect(result.reportSnapshot.cohort).toBe("all");
+    expect(result.coverageSummaryPath).toContain("coverage-summary.json");
     expect(mockApi.campaignBodies[0]?.targetSelector).toBe("main");
     expect(mockApi.campaignBodies[1]?.targetSelector).toBe("main");
 
     const summaryJson = JSON.parse(await readFile(result.outputPath, "utf8"));
     expect(summaryJson.repos).toHaveLength(5);
     expect(summaryJson.retryTotals.totalRetries).toBeGreaterThanOrEqual(1);
+    expect(summaryJson.coverageSummaryPath).toBe(result.coverageSummaryPath);
+
+    const coverageJson = JSON.parse(await readFile(result.coverageSummaryPath, "utf8"));
+    expect(coverageJson.totals).toEqual({
+      totalCoverageRepos: 1,
+      excludedCount: 1,
+      guardedAppliedCount: 0,
+      guardedNoopCount: 0,
+      guardedBlockedCount: 0
+    });
+    expect(coverageJson.byRecommendation).toEqual({
+      android_guarded_baseline: 1
+    });
   });
 
   it("uses repo defaultBranch as the campaign target selector when provided", async () => {
