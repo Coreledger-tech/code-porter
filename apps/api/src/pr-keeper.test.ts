@@ -14,7 +14,7 @@ describe("pr-keeper", () => {
         prNumber: 11,
         prUrl: "https://github.com/acme/demo/pull/11",
         status: "needs_review",
-        mergeChecklist: { passed: true, reasons: [] },
+        mergeChecklist: { passed: true, reasons: [], advisories: [], changedFilePaths: ["pom.xml"] },
         changedFiles: 2,
         changedLines: 20,
         finishedAt: "2026-03-12T08:00:00.000Z"
@@ -24,7 +24,7 @@ describe("pr-keeper", () => {
         prNumber: 12,
         prUrl: "https://github.com/acme/demo/pull/12",
         status: "completed",
-        mergeChecklist: { passed: true, reasons: [] },
+        mergeChecklist: { passed: true, reasons: [], advisories: [], changedFilePaths: ["pom.xml"] },
         changedFiles: 1,
         changedLines: 8,
         finishedAt: "2026-03-12T09:00:00.000Z"
@@ -34,7 +34,12 @@ describe("pr-keeper", () => {
         prNumber: 13,
         prUrl: "https://github.com/acme/demo/pull/13",
         status: "completed",
-        mergeChecklist: { passed: false, reasons: ["missing verify.json"] },
+        mergeChecklist: {
+          passed: false,
+          reasons: ["missing verify.json"],
+          advisories: [],
+          changedFilePaths: ["pom.xml"]
+        },
         changedFiles: 1,
         changedLines: 4,
         finishedAt: "2026-03-12T10:00:00.000Z"
@@ -47,11 +52,15 @@ describe("pr-keeper", () => {
   it("falls back to completed status when legacy summaries lack mergeChecklist", () => {
     expect(inferChecklist({}, "completed")).toEqual({
       passed: true,
-      reasons: []
+      reasons: [],
+      advisories: [],
+      changedFilePaths: []
     });
     expect(inferChecklist({}, "needs_review")).toEqual({
       passed: false,
-      reasons: []
+      reasons: [],
+      advisories: [],
+      changedFilePaths: []
     });
   });
 

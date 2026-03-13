@@ -70,6 +70,16 @@ describe("reportsRouter", () => {
         rows: [{ project_id: "p1", project_name: "demo", total_runs: 8, blocked_runs: 2, blocked_rate: 0.25 }]
       })
       .mockResolvedValueOnce({ rows: [{ total_apply_runs: 12, cohort_apply_runs: 8 }] })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            keeper_chosen: 4,
+            keeper_merged: 2,
+            merge_ready: 3,
+            superseded_closed_count: 5
+          }
+        ]
+      })
       .mockResolvedValueOnce({ rows: [{ failure_kind: "code_compile_failure" }] });
 
     const handler = findRouteHandler(reportsRouter(), "get", "/reports/pilot");
@@ -93,6 +103,12 @@ describe("reportsRouter", () => {
     expect((res.body as any).prOutcomes.mergeRate).toBeCloseTo(0.6);
     expect((res.body as any).timeToGreen.p50Hours).toBeCloseTo(10.5);
     expect((res.body as any).retryRate.rate).toBeCloseTo(0.25);
+    expect((res.body as any).keeperOutcomes).toEqual({
+      keeperChosen: 4,
+      keeperMerged: 2,
+      mergeReady: 3,
+      supersededClosedCount: 5
+    });
     expect((res.body as any).worstOffendersByProject).toHaveLength(1);
     expect((res.body as any).worstOffendersByProject[0]).toMatchObject({
       projectId: "p1",

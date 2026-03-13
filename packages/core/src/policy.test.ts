@@ -30,6 +30,12 @@ describe("YamlPolicyEngine", () => {
     expect(policy.verify.retryOnCachedResolution).toBe(true);
     expect(policy.verify.maven.forceUpdate).toBe(true);
     expect(policy.gradle?.allowAndroidBaselineApply).toBe(false);
+    expect(policy.pullRequests?.keeper.enabled).toBe(true);
+    expect(policy.pullRequests?.mergeReady.enabled).toBe(true);
+    expect(policy.pullRequests?.mergeReady.label).toBe("code-porter:merge-ready");
+    expect(policy.pullRequests?.autoMerge.enabled).toBe(false);
+    expect(policy.pullRequests?.autoMerge.allowedBuildSystems).toEqual(["maven"]);
+    expect(policy.pullRequests?.autoMerge.mergeMethod).toBe("squash");
     expect(policy.remediation?.mavenCompile?.enabled).toBe(false);
     expect(policy.remediation?.mavenTestRuntime?.enabled).toBe(false);
     expect(policy.remediation?.mavenTestRuntime?.allowedFixes).toContain(
@@ -229,5 +235,41 @@ describe("YamlPolicyEngine", () => {
       "ensure_add_opens_java_nio",
       "ensure_add_opens_java_lang"
     ]);
+  });
+
+  it("parses pull request automation controls", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "code-porter-policy-"));
+    const policyPath = join(tempDir, "pull-requests.yaml");
+    await writeFile(
+      policyPath,
+      [
+        "pullRequests:",
+        "  keeper:",
+        "    enabled: true",
+        "  mergeReady:",
+        "    enabled: true",
+        "    label: code-porter:ready",
+        "  autoMerge:",
+        "    enabled: true",
+        "    allowedBuildSystems:",
+        "      - maven",
+        "      - gradle",
+        "    maxFilesChanged: 2",
+        "    maxLinesChanged: 20",
+        "    mergeMethod: squash"
+      ].join("\n"),
+      "utf8"
+    );
+
+    const engine = new YamlPolicyEngine();
+    const policy = await engine.load(policyPath);
+
+    expect(policy.pullRequests?.keeper.enabled).toBe(true);
+    expect(policy.pullRequests?.mergeReady.label).toBe("code-porter:ready");
+    expect(policy.pullRequests?.autoMerge.enabled).toBe(true);
+    expect(policy.pullRequests?.autoMerge.allowedBuildSystems).toEqual(["maven", "gradle"]);
+    expect(policy.pullRequests?.autoMerge.maxFilesChanged).toBe(2);
+    expect(policy.pullRequests?.autoMerge.maxLinesChanged).toBe(20);
+    expect(policy.pullRequests?.autoMerge.mergeMethod).toBe("squash");
   });
 });

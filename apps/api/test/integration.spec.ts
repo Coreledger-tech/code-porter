@@ -144,6 +144,7 @@ async function prepareMavenRepo(input: {
   repoName: string;
   mutatePom?: (pom: string) => string;
   makeDirty?: boolean;
+  setup?: (repoPath: string) => Promise<void>;
 }): Promise<string> {
   const repoPath = await mkdtemp(join(tmpdir(), `${input.repoName}-`));
   const fixturePath = resolve(process.cwd(), "fixtures/java-maven-simple");
@@ -154,6 +155,10 @@ async function prepareMavenRepo(input: {
     const pom = await readFile(pomPath, "utf8");
     const updated = input.mutatePom(pom);
     await writeFile(pomPath, updated, "utf8");
+  }
+
+  if (input.setup) {
+    await input.setup(repoPath);
   }
 
   await runGit(repoPath, ["init"]);
@@ -3158,6 +3163,13 @@ describe("API integration", () => {
         });
       }
 
+      if (url.includes("api.github.com/repos/Coreledger-tech/code-porter/issues/102/labels")) {
+        return new Response(JSON.stringify({ labels: ["code-porter:merge-ready"] }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      }
+
       if (url.includes("api.github.com/repos/Coreledger-tech/code-porter/pulls/101") && init?.method === "PATCH") {
         return new Response(JSON.stringify({ number: 101, state: "closed" }), {
           status: 200,
@@ -3205,10 +3217,19 @@ describe("API integration", () => {
         status: string;
         prUrl?: string | null;
         prState?: string | null;
+        evidencePath: string;
         summary: {
           keeperCandidate?: boolean;
+          keeperChosen?: boolean;
+          mergeReady?: boolean;
+          supersededClosedCount?: number;
           supersededByPrNumber?: number | null;
-          mergeChecklist?: { passed: boolean; reasons: string[] };
+          mergeChecklist?: {
+            passed: boolean;
+            reasons: string[];
+            advisories?: string[];
+            changedFilePaths?: string[];
+          };
         };
       }>({
         baseUrl,
@@ -3227,10 +3248,19 @@ describe("API integration", () => {
         status: string;
         prUrl?: string | null;
         prState?: string | null;
+        evidencePath: string;
         summary: {
           keeperCandidate?: boolean;
+          keeperChosen?: boolean;
+          mergeReady?: boolean;
+          supersededClosedCount?: number;
           supersededByPrNumber?: number | null;
-          mergeChecklist?: { passed: boolean; reasons: string[] };
+          mergeChecklist?: {
+            passed: boolean;
+            reasons: string[];
+            advisories?: string[];
+            changedFilePaths?: string[];
+          };
         };
       }>({
         baseUrl,
@@ -3241,24 +3271,261 @@ describe("API integration", () => {
         prState?: string | null;
         summary: {
           keeperCandidate?: boolean;
+          keeperChosen?: boolean;
+          mergeReady?: boolean;
           supersededByPrNumber?: number | null;
         };
       }>(baseUrl, `/runs/${firstApply.runId}`);
 
       expect(secondRun.prUrl).toBe("https://github.com/Coreledger-tech/code-porter/pull/102");
       expect(secondRun.summary.keeperCandidate).toBe(true);
+      expect(secondRun.summary.keeperChosen).toBe(true);
+      expect(secondRun.summary.mergeReady).toBe(true);
+      expect(secondRun.summary.supersededClosedCount).toBe(1);
+      expect(secondRun.summary.mergeChecklist?.changedFilePaths).toEqual(["pom.xml"]);
       expect(secondRun.summary.supersededByPrNumber ?? null).toBeNull();
       expect(refreshedFirstRun.prState).toBe("closed");
       expect(refreshedFirstRun.summary.keeperCandidate).toBe(false);
+      expect(refreshedFirstRun.summary.keeperChosen).toBe(false);
+      expect(refreshedFirstRun.summary.mergeReady).toBe(false);
       expect(refreshedFirstRun.summary.supersededByPrNumber).toBe(102);
+
+      const runArtifact = JSON.parse(
+        await readFile(join(secondRun.evidencePath, "run.json"), "utf8")
+      ) as {
+        summary?: {
+          keeperCandidate?: boolean;
+          keeperChosen?: boolean;
+          mergeReady?: boolean;
+          supersededClosedCount?: number;
+          mergeChecklist?: { changedFilePaths?: string[] };
+        };
+      };
+      expect(runArtifact.summary).toMatchObject({
+        keeperCandidate: true,
+        keeperChosen: true,
+        mergeReady: true,
+        supersededClosedCount: 1
+      });
+      expect(runArtifact.summary?.mergeChecklist?.changedFilePaths).toEqual(["pom.xml"]);
 
       expect(fetchMock).toHaveBeenCalledWith(
         expect.stringContaining("/issues/101/comments"),
         expect.objectContaining({ method: "POST" })
       );
       expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining("/issues/102/labels"),
+        expect.objectContaining({ method: "POST" })
+      );
+      expect(fetchMock).toHaveBeenCalledWith(
         expect.stringContaining("/pulls/101"),
         expect.objectContaining({ method: "PATCH" })
+      );
+    } finally {
+      if (originalAuthMode === undefined) {
+        delete process.env.GITHUB_AUTH_MODE;
+      } else {
+        process.env.GITHUB_AUTH_MODE = originalAuthMode;
+      }
+      if (originalToken === undefined) {
+        delete process.env.GITHUB_TOKEN;
+      } else {
+        process.env.GITHUB_TOKEN = originalToken;
+      }
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("auto-merges strict-safe Maven keeper PRs under pilot-stage11", async () => {
+    const remoteRepo = await prepareMavenRepo({
+      repoName: "code-porter-int-stage11-auto-merge-remote",
+      mutatePom: (pom) =>
+        pom
+          .replace("<version>3.8.1</version>", "<version>3.11.0</version>")
+          .replace("<version>2.22.2</version>", "<version>3.2.5</version>")
+          .replace(
+            "</project>",
+            [
+              "  <dependencies>",
+              "    <dependency>",
+              "      <groupId>junit</groupId>",
+              "      <artifactId>junit</artifactId>",
+              "      <version>4.13.2</version>",
+              "      <scope>test</scope>",
+              "    </dependency>",
+              "  </dependencies>",
+              "</project>"
+            ].join("\n")
+          ),
+      setup: async (repoPath) => {
+        await mkdir(join(repoPath, "src", "main", "java", "com", "example"), {
+          recursive: true
+        });
+        await mkdir(join(repoPath, "src", "test", "java", "com", "example"), {
+          recursive: true
+        });
+        await writeFile(
+          join(repoPath, "src", "main", "java", "com", "example", "App.java"),
+          [
+            "package com.example;",
+            "",
+            "public class App {",
+            "  public int sum(int left, int right) {",
+            "    return left + right;",
+            "  }",
+            "}"
+          ].join("\n"),
+          "utf8"
+        );
+        await writeFile(
+          join(repoPath, "src", "test", "java", "com", "example", "AppTest.java"),
+          [
+            "package com.example;",
+            "",
+            "import org.junit.Test;",
+            "import static org.junit.Assert.assertEquals;",
+            "",
+            "public class AppTest {",
+            "  @Test",
+            "  public void sumsNumbers() {",
+            "    assertEquals(3, new App().sum(1, 2));",
+            "  }",
+            "}"
+          ].join("\n"),
+          "utf8"
+        );
+      }
+    });
+    cleanupPaths.push(remoteRepo);
+    const remoteDefaultBranch = await runGitStdout(remoteRepo, ["rev-parse", "--abbrev-ref", "HEAD"]);
+
+    const originalAuthMode = process.env.GITHUB_AUTH_MODE;
+    const originalToken = process.env.GITHUB_TOKEN;
+    process.env.GITHUB_AUTH_MODE = "pat";
+    process.env.GITHUB_TOKEN = "integration-token";
+    const realFetch = global.fetch;
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.startsWith("http://127.0.0.1")) {
+        return realFetch(input, init);
+      }
+
+      if (url.includes("api.github.com/repos/Coreledger-tech/code-porter/pulls") && init?.method === "POST") {
+        return new Response(
+          JSON.stringify({
+            html_url: "https://github.com/Coreledger-tech/code-porter/pull/201",
+            number: 201
+          }),
+          {
+            status: 201,
+            headers: { "content-type": "application/json" }
+          }
+        );
+      }
+
+      if (url.includes("api.github.com/repos/Coreledger-tech/code-porter/issues/201/labels")) {
+        return new Response(JSON.stringify({ labels: ["code-porter:merge-ready"] }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      }
+
+      if (url.includes("api.github.com/repos/Coreledger-tech/code-porter/pulls/201/merge")) {
+        return new Response(JSON.stringify({ merged: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      }
+
+      return new Response(JSON.stringify({ default_branch: "main" }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const project = await apiFetch<{ id: string }>(baseUrl, "/projects/github", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "github-stage11-auto-merge",
+          owner: "Coreledger-tech",
+          repo: "code-porter",
+          cloneUrl: remoteRepo,
+          defaultBranch: remoteDefaultBranch
+        })
+      });
+
+      const campaign = await apiFetch<{ id: string }>(baseUrl, "/campaigns", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: project.id,
+          policyId: "pilot-stage11",
+          recipePack: "java-maven-core",
+          targetSelector: remoteDefaultBranch
+        })
+      });
+
+      const applyStart = await apiFetch<{ runId: string; status: string }>(
+        baseUrl,
+        `/campaigns/${campaign.id}/apply`,
+        { method: "POST" }
+      );
+
+      const run = await waitForRunTerminal<{
+        status: string;
+        prUrl?: string | null;
+        prState?: string | null;
+        mergedAt?: string | null;
+        evidencePath: string;
+        summary: {
+          keeperCandidate?: boolean;
+          keeperChosen?: boolean;
+          keeperMerged?: boolean;
+          mergeReady?: boolean;
+          mergeChecklist?: { passed: boolean; changedFilePaths?: string[] };
+        };
+      }>({
+        baseUrl,
+        runId: applyStart.runId
+      });
+
+      expect(run.status).toBe("completed");
+      expect(run.prUrl).toBe("https://github.com/Coreledger-tech/code-porter/pull/201");
+      expect(run.prState).toBe("merged");
+      expect(run.mergedAt ?? null).not.toBeNull();
+      expect(run.summary.keeperCandidate).toBe(true);
+      expect(run.summary.keeperChosen).toBe(true);
+      expect(run.summary.keeperMerged).toBe(true);
+      expect(run.summary.mergeReady).toBe(true);
+      expect(run.summary.mergeChecklist?.passed).toBe(true);
+      expect(run.summary.mergeChecklist?.changedFilePaths).toEqual(["pom.xml"]);
+
+      const runArtifact = JSON.parse(
+        await readFile(join(run.evidencePath, "run.json"), "utf8")
+      ) as {
+        prState?: string | null;
+        summary?: {
+          keeperMerged?: boolean;
+          mergeReady?: boolean;
+        };
+      };
+      expect(runArtifact.prState).toBe("merged");
+      expect(runArtifact.summary).toMatchObject({
+        keeperMerged: true,
+        mergeReady: true
+      });
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining("/issues/201/labels"),
+        expect.objectContaining({ method: "POST" })
+      );
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining("/pulls/201/merge"),
+        expect.objectContaining({ method: "PUT" })
       );
     } finally {
       if (originalAuthMode === undefined) {

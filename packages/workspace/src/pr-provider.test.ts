@@ -233,4 +233,76 @@ describe("GitHubPRProvider", () => {
       })
     );
   });
+
+  it("adds merge-ready labels to pull requests", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ labels: ["code-porter:merge-ready"] })
+      })
+    );
+
+    const authProvider: GitHubAuthProvider = {
+      getToken: vi.fn().mockResolvedValue("test-token")
+    };
+    const provider = new GitHubPRProvider(authProvider);
+
+    await provider.addLabelsToPullRequest({
+      project: {
+        id: "p1",
+        name: "demo",
+        type: "github",
+        owner: "acme",
+        repo: "demo",
+        createdAt: new Date().toISOString()
+      },
+      prNumber: 24,
+      labels: ["code-porter:merge-ready"]
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.github.com/repos/acme/demo/issues/24/labels",
+      expect.objectContaining({
+        method: "POST"
+      })
+    );
+  });
+
+  it("squash merges keeper pull requests", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ merged: true })
+      })
+    );
+
+    const authProvider: GitHubAuthProvider = {
+      getToken: vi.fn().mockResolvedValue("test-token")
+    };
+    const provider = new GitHubPRProvider(authProvider);
+
+    await provider.mergePullRequest({
+      project: {
+        id: "p1",
+        name: "demo",
+        type: "github",
+        owner: "acme",
+        repo: "demo",
+        createdAt: new Date().toISOString()
+      },
+      prNumber: 24,
+      mergeMethod: "squash"
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.github.com/repos/acme/demo/pulls/24/merge",
+      expect.objectContaining({
+        method: "PUT"
+      })
+    );
+  });
 });
