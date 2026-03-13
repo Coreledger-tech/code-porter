@@ -45,6 +45,8 @@ export type VerifyFailureKind =
   | "artifact_resolution"
   | "repo_unreachable"
   | "budget_exceeded"
+  | "verify_timeout"
+  | "verifier_infrastructure_failure"
   | "java17_plugin_incompat"
   | "java17_module_access_test_failure"
   | "unknown";
@@ -259,7 +261,12 @@ export interface CheckResult {
   exitCode?: number;
   reason?: string;
   output?: string;
+  stdout?: string;
+  stderr?: string;
+  elapsedMs?: number;
   timedOut?: boolean;
+  aborted?: boolean;
+  terminationSignal?: string;
   failureKind?: VerifyFailureKind;
   budgetKey?: "maxVerifyMinutesPerRun" | "maxVerifyRetries" | "maxEvidenceZipBytes";
   budgetLimit?: number;

@@ -91,6 +91,46 @@ function commandSpecAvailable(scan: ScanResult, command?: string): boolean {
   return true;
 }
 
+function readTimeoutOverrideMs(name: string): number | undefined {
+  const raw = process.env[name];
+  if (!raw) {
+    return undefined;
+  }
+
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return undefined;
+  }
+
+  return Math.floor(parsed);
+}
+
+function resolveVerifyBudgetMs(policy: PolicyConfig): number {
+  const policyBudgetMs = policy.maxVerifyMinutesPerRun * 60_000;
+  const overrideMs = readTimeoutOverrideMs("VERIFY_TOTAL_TIMEOUT_MS");
+  return overrideMs ? Math.min(policyBudgetMs, overrideMs) : policyBudgetMs;
+}
+
+function resolvePhaseTimeoutMs(input: {
+  phase: "compile" | "tests" | "static";
+  remainingMs: number;
+}): number {
+  const overrideMs =
+    input.phase === "compile"
+      ? readTimeoutOverrideMs("VERIFY_COMPILE_TIMEOUT_MS")
+      : input.phase === "tests"
+        ? readTimeoutOverrideMs("VERIFY_TEST_TIMEOUT_MS")
+        : undefined;
+  const defaultMs =
+    input.phase === "compile"
+      ? 5 * 60_000
+      : input.phase === "tests"
+        ? 10 * 60_000
+        : input.remainingMs;
+
+  return Math.max(1, Math.min(input.remainingMs, overrideMs ?? defaultMs));
+}
+
 function buildAttempt(input: {
   command: string;
   args: string[];
@@ -165,6 +205,57 @@ function buildBudgetExceededResult(input: {
   };
 }
 
+function buildVerifierTimeoutResult(input: {
+  command: string;
+  args: string[];
+  reason: string;
+  output?: string;
+  stdout?: string;
+  stderr?: string;
+  elapsedMs?: number;
+  timedOut?: boolean;
+  terminationSignal?: string;
+}): CheckResult {
+  return {
+    status: "failed",
+    command: [input.command, ...input.args].join(" "),
+    reason: input.reason,
+    output: input.output,
+    stdout: input.stdout,
+    stderr: input.stderr,
+    elapsedMs: input.elapsedMs,
+    timedOut: input.timedOut ?? true,
+    terminationSignal: input.terminationSignal,
+    failureKind: "verify_timeout",
+    blockedReason: input.reason
+  };
+}
+
+function buildVerifierInfrastructureFailureResult(input: {
+  command: string;
+  args: string[];
+  reason: string;
+  output?: string;
+  stdout?: string;
+  stderr?: string;
+  elapsedMs?: number;
+  terminationSignal?: string;
+}): CheckResult {
+  return {
+    status: "failed",
+    command: [input.command, ...input.args].join(" "),
+    reason: input.reason,
+    output: input.output,
+    stdout: input.stdout,
+    stderr: input.stderr,
+    elapsedMs: input.elapsedMs,
+    aborted: true,
+    terminationSignal: input.terminationSignal,
+    failureKind: "verifier_infrastructure_failure",
+    blockedReason: input.reason
+  };
+}
+
 function buildMissingCommandResult(input: {
   buildSystem: ScanResult["buildSystem"];
   command?: string;
@@ -231,50 +322,65 @@ async function runCommandWithClassification(input: {
     deadlineMs: number;
     maxVerifyMinutesPerRun: number;
   };
+  signal?: AbortSignal;
 }): Promise<CheckResult> {
   if (input.verifyBudget) {
     const remainingMs = input.verifyBudget.deadlineMs - Date.now();
     if (remainingMs <= 0) {
-      const observedMinutes = Number(
-        ((Date.now() - input.verifyBudget.startedAtMs) / 60_000).toFixed(2)
-      );
-      return buildBudgetExceededResult({
+      return buildVerifierTimeoutResult({
         command: input.command,
         args: input.args,
-        key: "maxVerifyMinutesPerRun",
-        limit: input.verifyBudget.maxVerifyMinutesPerRun,
-        observed: observedMinutes,
-        reason: "Verification runtime budget exhausted before command execution"
+        reason: "Total verify timeout exhausted before command execution"
       });
     }
   }
 
-  const timeoutMs = input.verifyBudget
+  const remainingMs = input.verifyBudget
     ? Math.max(1, input.verifyBudget.deadlineMs - Date.now())
-    : undefined;
+    : 300_000;
+  const timeoutMs = resolvePhaseTimeoutMs({
+    phase: input.phase,
+    remainingMs
+  });
   const result = await runCommand(
     {
       command: input.command,
       args: input.args
     },
     input.repoPath,
-    { timeoutMs }
+    {
+      timeoutMs,
+      signal: input.signal
+    }
   );
 
-  if (result.status === "failed" && result.timedOut && input.verifyBudget) {
-    const observedMinutes = Number(
-      ((Date.now() - input.verifyBudget.startedAtMs) / 60_000).toFixed(2)
-    );
-    const budgetResult = buildBudgetExceededResult({
+  if (result.status === "failed" && result.timedOut) {
+    return buildVerifierTimeoutResult({
       command: input.command,
       args: input.args,
-      key: "maxVerifyMinutesPerRun",
-      limit: input.verifyBudget.maxVerifyMinutesPerRun,
-      observed: observedMinutes,
-      reason: "Verification command timed out due to maxVerifyMinutesPerRun budget"
+      reason:
+        result.reason ??
+        `Verification ${input.phase} command timed out after ${timeoutMs}ms`,
+      output: result.output,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      elapsedMs: result.elapsedMs,
+      timedOut: true,
+      terminationSignal: result.terminationSignal
     });
-    budgetResult.output = result.output;
-    return budgetResult;
+  }
+
+  if (result.status === "failed" && result.aborted) {
+    return buildVerifierInfrastructureFailureResult({
+      command: input.command,
+      args: input.args,
+      reason: result.reason ?? "Verification command aborted",
+      output: result.output,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      elapsedMs: result.elapsedMs,
+      terminationSignal: result.terminationSignal
+    });
   }
 
   const classified = withFailureClassification(result, {
@@ -304,6 +410,7 @@ async function maybeRunMavenPrefetch(input: {
     deadlineMs: number;
     maxVerifyMinutesPerRun: number;
   };
+  signal?: AbortSignal;
 }): Promise<VerifyAttempt | undefined> {
   if (
     input.scan.buildSystem !== "maven" ||
@@ -320,7 +427,8 @@ async function maybeRunMavenPrefetch(input: {
     args,
     repoPath: input.repoPath,
     phase: "compile",
-    verifyBudget: input.verifyBudget
+    verifyBudget: input.verifyBudget,
+    signal: input.signal
   });
 
   return buildAttempt({
@@ -346,6 +454,7 @@ async function runBuildCheck(input: {
     deadlineMs: number;
     maxVerifyMinutesPerRun: number;
   };
+  signal?: AbortSignal;
 }): Promise<CheckResult> {
   const attempts: VerifyAttempt[] = [...(input.prefaceAttempts ?? [])];
   let retryCount = 0;
@@ -356,7 +465,8 @@ async function runBuildCheck(input: {
     args: input.commandSpec.args,
     repoPath: input.repoPath,
     phase: input.phase,
-    verifyBudget: input.verifyBudget
+    verifyBudget: input.verifyBudget,
+    signal: input.signal
   });
   attempts.push(
     buildAttempt({
@@ -395,7 +505,8 @@ async function runBuildCheck(input: {
       args: retryArgs,
       repoPath: input.repoPath,
       phase: input.phase,
-      verifyBudget: input.verifyBudget
+      verifyBudget: input.verifyBudget,
+      signal: input.signal
     });
     retryCount += 1;
     attempts.push(
@@ -435,7 +546,8 @@ async function runBuildCheck(input: {
       args: purgeArgs,
       repoPath: input.repoPath,
       phase: input.phase,
-      verifyBudget: input.verifyBudget
+      verifyBudget: input.verifyBudget,
+      signal: input.signal
     });
     attempts.push(
       buildAttempt({
@@ -453,7 +565,8 @@ async function runBuildCheck(input: {
       args: retryArgs,
       repoPath: input.repoPath,
       phase: input.phase,
-      verifyBudget: input.verifyBudget
+      verifyBudget: input.verifyBudget,
+      signal: input.signal
     });
     retryCount += 1;
     attempts.push(
@@ -473,11 +586,17 @@ async function runBuildCheck(input: {
 }
 
 export class DefaultVerifier implements VerifierPort {
+  constructor(
+    private readonly options?: {
+      signal?: AbortSignal;
+    }
+  ) {}
+
   async run(scan: ScanResult, repoPath: string, policy: PolicyConfig): Promise<VerifySummary> {
     const startedAtMs = Date.now();
     const verifyBudget = {
       startedAtMs,
-      deadlineMs: startedAtMs + policy.maxVerifyMinutesPerRun * 60_000,
+      deadlineMs: startedAtMs + resolveVerifyBudgetMs(policy),
       maxVerifyMinutesPerRun: policy.maxVerifyMinutesPerRun
     };
     const buildCommand = getBuildCommand(scan);
@@ -486,7 +605,8 @@ export class DefaultVerifier implements VerifierPort {
       scan,
       repoPath,
       policy,
-      verifyBudget
+      verifyBudget,
+      signal: this.options?.signal
     });
 
     const compileMissingReason =
@@ -505,7 +625,8 @@ export class DefaultVerifier implements VerifierPort {
             commandSpec: buildCommand,
             phase: "compile",
             prefaceAttempts: prefetchAttempt ? [prefetchAttempt] : undefined,
-            verifyBudget
+            verifyBudget,
+            signal: this.options?.signal
           })
         : buildMissingCommandResult({
             buildSystem: scan.buildSystem,
@@ -516,7 +637,18 @@ export class DefaultVerifier implements VerifierPort {
               : `No build command configured for build system '${scan.buildSystem}'`)
           });
 
-    const tests = !scan.hasTests
+    const tests = this.options?.signal?.aborted
+      ? {
+          status: "not_run" as const,
+          reason: "Tests skipped because verification was aborted"
+        }
+      : compile.failureKind === "verify_timeout" ||
+          compile.failureKind === "verifier_infrastructure_failure"
+        ? {
+            status: "not_run" as const,
+            reason: "Tests skipped because compile verification did not complete cleanly"
+          }
+      : !scan.hasTests
       ? {
           status: "not_run" as const,
           reason: "No tests detected"
@@ -528,7 +660,8 @@ export class DefaultVerifier implements VerifierPort {
             policy,
             commandSpec: testCommand,
             phase: "tests",
-            verifyBudget
+            verifyBudget,
+            signal: this.options?.signal
           })
         : buildMissingCommandResult({
             buildSystem: scan.buildSystem,
@@ -539,7 +672,13 @@ export class DefaultVerifier implements VerifierPort {
               : `No test command configured for build system '${scan.buildSystem}'`)
           });
 
-    const staticChecks = await runBasicStaticChecks(repoPath);
+    const staticChecks =
+      this.options?.signal?.aborted
+        ? {
+            status: "not_run" as const,
+            reason: "Static checks skipped because verification was aborted"
+          }
+        : await runBasicStaticChecks(repoPath);
 
     return {
       buildSystem: scan.buildSystem,

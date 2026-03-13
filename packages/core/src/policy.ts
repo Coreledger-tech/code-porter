@@ -18,6 +18,8 @@ const ALL_FAILURE_KINDS: VerifyFailureKind[] = [
   "artifact_resolution",
   "repo_unreachable",
   "budget_exceeded",
+  "verify_timeout",
+  "verifier_infrastructure_failure",
   "java17_plugin_incompat",
   "java17_module_access_test_failure",
   "unknown"
@@ -47,7 +49,9 @@ const DEFAULT_POLICY: PolicyConfig = {
       "tool_missing",
       "artifact_resolution",
       "repo_unreachable",
-      "budget_exceeded"
+      "budget_exceeded",
+      "verify_timeout",
+      "verifier_infrastructure_failure"
     ],
     retryOnCachedResolution: true,
     maven: {
@@ -173,6 +177,8 @@ function deriveLegacyVerifyConfig(
         "artifact_resolution",
         "repo_unreachable",
         "budget_exceeded",
+        "verify_timeout",
+        "verifier_infrastructure_failure",
         "unknown"
       ],
       retryOnCachedResolution: true,

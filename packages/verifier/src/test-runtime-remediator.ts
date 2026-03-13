@@ -29,7 +29,7 @@ type RemediationIteration = {
   ruleId: AllowedFix;
   filesChanged: number;
   linesChanged: number;
-  triggerFailureKind: "java17_module_access_test_failure";
+  triggerFailureKind: NonNullable<VerifySummary["tests"]["failureKind"]>;
   verifyAfter: {
     testsStatus: VerifySummary["tests"]["status"];
     testsFailureKind: VerifySummary["tests"]["failureKind"];
@@ -280,6 +280,22 @@ function detectRequiredRuleIds(verify: VerifySummary): AllowedFix[] {
   return required;
 }
 
+function isSupportedModuleAccessFailure(verify: VerifySummary): boolean {
+  if (verify.tests.status !== "failed") {
+    return false;
+  }
+
+  const failureKind = verify.tests.failureKind;
+  if (
+    failureKind !== "java17_module_access_test_failure" &&
+    failureKind !== "verify_timeout"
+  ) {
+    return false;
+  }
+
+  return detectRequiredRuleIds(verify).length > 0;
+}
+
 function countPatchChangedLines(patch: string): number {
   return patch
     .split("\n")
@@ -384,11 +400,12 @@ export class MavenTestRuntimeDeterministicRemediator implements DeterministicRem
     let totalLinesChanged = 0;
 
     for (let iteration = 1; iteration <= config.maxIterations; iteration += 1) {
-      if (verifySummary.tests.failureKind !== "java17_module_access_test_failure") {
+      if (!isSupportedModuleAccessFailure(verifySummary)) {
         break;
       }
 
       const beforePom = await readFile(pomPath, "utf8");
+      const triggerFailureKind = verifySummary.tests.failureKind;
       const requiredRuleIds = detectRequiredRuleIds(verifySummary).filter((ruleId) =>
         config.allowedFixes.includes(ruleId)
       );
@@ -452,7 +469,8 @@ export class MavenTestRuntimeDeterministicRemediator implements DeterministicRem
         ruleId: candidate.ruleId,
         filesChanged,
         linesChanged,
-        triggerFailureKind: "java17_module_access_test_failure",
+        triggerFailureKind:
+          triggerFailureKind ?? "java17_module_access_test_failure",
         verifyAfter: {
           testsStatus: verifySummary.tests.status,
           testsFailureKind: verifySummary.tests.failureKind

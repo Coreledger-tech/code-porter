@@ -160,6 +160,12 @@ export class AsyncRunWorker {
     });
 
     let leaseLost = false;
+    const executionAbortController = new AbortController();
+    const abortExecution = (reason: string): void => {
+      if (!executionAbortController.signal.aborted) {
+        executionAbortController.abort(reason);
+      }
+    };
     const heartbeatHandle = setInterval(async () => {
       try {
         const extended = await extendRunJobLease({
@@ -170,6 +176,8 @@ export class AsyncRunWorker {
 
         if (!extended) {
           leaseLost = true;
+          abortExecution("worker lease lost during run execution");
+          clearInterval(heartbeatHandle);
         }
       } catch (error) {
         logWarn("worker_lease_heartbeat_failed", "Lease heartbeat failed", {
@@ -183,7 +191,9 @@ export class AsyncRunWorker {
     }, this.heartbeatSeconds * 1000);
 
     try {
-      const result = await executeRunById(job.runId, this.workerId);
+      const result = await executeRunById(job.runId, this.workerId, {
+        signal: executionAbortController.signal
+      });
       const queueStatus =
         result.status === "failed"
           ? "failed"

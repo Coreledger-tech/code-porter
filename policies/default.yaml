@@ -24,6 +24,8 @@ verify:
     - artifact_resolution
     - repo_unreachable
     - budget_exceeded
+    - verify_timeout
+    - verifier_infrastructure_failure
   retryOnCachedResolution: true
   maven:
     forceUpdate: true

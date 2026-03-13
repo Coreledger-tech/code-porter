@@ -352,6 +352,8 @@ export async function executeWorkflow(input: {
   knowledgePublisher?: KnowledgePublisherPort;
   semanticRetrievalProvider?: SemanticRetrievalProvider;
   remediator?: DeterministicRemediator;
+  executionSignal?: AbortSignal;
+  isCancellationRequested?: () => Promise<boolean>;
   onStepEvent?: (event: {
     eventType: "step_start" | "step_end" | "warning" | "error";
     step: string;
@@ -443,6 +445,7 @@ export async function executeWorkflow(input: {
   let branchName: string | undefined = input.workspace.branchName;
   let applySummary: Record<string, unknown> | undefined;
   let verifySummary: VerifySummary;
+  let verifyArtifactWritten = false;
   let remediationActions: RemediationAction[] = [];
   let commitAfter: string | undefined;
   let guardedAndroidBaselineMode = false;
@@ -522,6 +525,8 @@ export async function executeWorkflow(input: {
         reason: "not_applicable",
         actions: []
       });
+      await input.evidenceWriter.write(runContext, "verify.json", verifySummary);
+      verifyArtifactWritten = true;
       await emit({
         eventType: "step_end",
         step: "verify",
@@ -539,8 +544,11 @@ export async function executeWorkflow(input: {
         message: "Running verifier checks"
       });
       verifySummary = await input.verifier.run(scanResult, buildRootPath, policy);
+      const executionInterrupted =
+        input.executionSignal?.aborted === true ||
+        (await input.isCancellationRequested?.()) === true;
 
-      if (input.remediator) {
+      if (input.remediator && !executionInterrupted) {
         const remediation = input.remediator.appliesTo({
           scan: scanResult,
           verify: verifySummary,
@@ -605,7 +613,23 @@ export async function executeWorkflow(input: {
             commitAfter = remediation.summary.commitAfter;
           }
         }
+      } else if (input.remediator && executionInterrupted) {
+        const remediationPayload = {
+          applied: false,
+          reason: "execution_aborted",
+          actions: [
+            {
+              action: "deterministic_remediation",
+              status: "skipped" as const,
+              reason: "Remediation skipped because verification execution was aborted"
+            }
+          ]
+        };
+        await input.evidenceWriter.write(runContext, "remediation.json", remediationPayload);
+        await input.evidenceWriter.write(runContext, "agentic-remediation.json", remediationPayload);
       }
+      await input.evidenceWriter.write(runContext, "verify.json", verifySummary);
+      verifyArtifactWritten = true;
       const budgetSignals = collectBudgetSignals(verifySummary);
       for (const signal of budgetSignals) {
         await emit({
@@ -649,11 +673,15 @@ export async function executeWorkflow(input: {
     verifySummary = verifyForPlanMode(scanResult.buildSystem, scanResult.hasTests);
   }
 
-  await input.evidenceWriter.write(runContext, "verify.json", verifySummary);
+  if (!verifyArtifactWritten) {
+    await input.evidenceWriter.write(runContext, "verify.json", verifySummary);
+  }
 
   if (
     input.mode === "apply" &&
     input.semanticRetrievalProvider?.enabled &&
+    input.executionSignal?.aborted !== true &&
+    (await input.isCancellationRequested?.()) !== true &&
     hasFailedVerifyChecks(verifySummary)
   ) {
     const topKRaw = Number(process.env.SEMANTIC_RETRIEVAL_TOP_K ?? "5");

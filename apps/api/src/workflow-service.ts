@@ -830,7 +830,13 @@ export async function cancelRun(runId: string, reason?: string): Promise<{
   };
 }
 
-export async function executeRunById(runId: string, workerId: string): Promise<{ runId: string; status: RunStatus }> {
+export async function executeRunById(
+  runId: string,
+  workerId: string,
+  options?: {
+    signal?: AbortSignal;
+  }
+): Promise<{ runId: string; status: RunStatus }> {
   const context = await loadRunExecutionContext(runId);
   if (!context) {
     throw new Error(`Run '${runId}' not found`);
@@ -941,6 +947,38 @@ export async function executeRunById(runId: string, workerId: string): Promise<{
   let workflowResult:
     | Awaited<ReturnType<typeof executeWorkflow>>
     | undefined;
+  const executionAbortController = new AbortController();
+  const abortExecution = (reason: string): void => {
+    if (!executionAbortController.signal.aborted) {
+      executionAbortController.abort(reason);
+    }
+  };
+  const forwardedAbortListener = (): void => {
+    abortExecution(
+      typeof options?.signal?.reason === "string"
+        ? options.signal.reason
+        : "worker requested execution abort"
+    );
+  };
+  if (options?.signal?.aborted) {
+    forwardedAbortListener();
+  } else {
+    options?.signal?.addEventListener("abort", forwardedAbortListener, {
+      once: true
+    });
+  }
+  const cancellationPollMsRaw = Number(process.env.RUN_CANCELLATION_POLL_MS ?? "1000");
+  const cancellationPollMs =
+    Number.isFinite(cancellationPollMsRaw) && cancellationPollMsRaw > 0
+      ? Math.floor(cancellationPollMsRaw)
+      : 1000;
+  const cancellationPollHandle = setInterval(() => {
+    void getRunCancellationState(run.id).then((cancelled) => {
+      if (cancelled.cancelled) {
+        abortExecution(cancelled.reason ?? "cancel requested by operator");
+      }
+    });
+  }, cancellationPollMs);
 
   try {
     if (project.type === "github") {
@@ -1003,12 +1041,16 @@ export async function executeRunById(runId: string, workerId: string): Promise<{
       workingRepoPath: workspace.workspacePath,
       workspace,
       recipeEngine,
-      verifier: new DefaultVerifier(),
+      verifier: new DefaultVerifier({
+        signal: executionAbortController.signal
+      }),
       evidenceWriter,
       evidenceStore,
       knowledgePublisher: new StubKnowledgePublisher(),
       semanticRetrievalProvider,
       remediator,
+      executionSignal: executionAbortController.signal,
+      isCancellationRequested: async () => (await getRunCancellationState(run.id)).cancelled,
       onStepEvent: async (event) => {
         const cancelled = await getRunCancellationState(run.id);
         if (cancelled.cancelled) {
@@ -1175,6 +1217,8 @@ export async function executeRunById(runId: string, workerId: string): Promise<{
       }
     });
   } finally {
+    clearInterval(cancellationPollHandle);
+    options?.signal?.removeEventListener("abort", forwardedAbortListener);
     if (preparedWorkspace) {
       try {
         await appendRunEvent(run.id, {

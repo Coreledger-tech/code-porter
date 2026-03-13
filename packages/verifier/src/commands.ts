@@ -1,12 +1,63 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { spawn } from "node:child_process";
 import type { CheckResult, ScanResult } from "@code-porter/core/src/models.js";
 
-const execFileAsync = promisify(execFile);
+const OUTPUT_LIMIT_BYTES = 10 * 1024 * 1024;
+const KILL_GRACE_MS = 1_000;
 
 export interface CommandSpec {
   command: string;
   args: string[];
+}
+
+function appendOutput(current: string, chunk: string): string {
+  if (current.length >= OUTPUT_LIMIT_BYTES) {
+    return current;
+  }
+
+  const next = current + chunk;
+  if (next.length <= OUTPUT_LIMIT_BYTES) {
+    return next;
+  }
+
+  const remaining = Math.max(0, OUTPUT_LIMIT_BYTES - current.length);
+  return `${current}${chunk.slice(0, remaining)}\n[output truncated]`;
+}
+
+function buildCommandText(spec: CommandSpec): string {
+  return [spec.command, ...spec.args].join(" ");
+}
+
+function formatAbortReason(reason: unknown): string {
+  if (typeof reason === "string" && reason.trim().length > 0) {
+    return reason;
+  }
+
+  if (reason instanceof Error && reason.message.trim().length > 0) {
+    return reason.message;
+  }
+
+  return "abort requested";
+}
+
+async function killChildProcessTree(pid: number): Promise<void> {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return;
+  }
+
+  const target = process.platform === "win32" ? pid : -pid;
+  try {
+    process.kill(target, "SIGTERM");
+  } catch {
+    return;
+  }
+
+  await new Promise((resolve) => setTimeout(resolve, KILL_GRACE_MS));
+
+  try {
+    process.kill(target, "SIGKILL");
+  } catch {
+    // Process already exited between TERM and KILL.
+  }
 }
 
 export function getBuildCommand(scan: ScanResult): CommandSpec | undefined {
@@ -44,44 +95,133 @@ export async function runCommand(
   cwd: string,
   options?: {
     timeoutMs?: number;
+    signal?: AbortSignal;
   }
 ): Promise<CheckResult> {
-  try {
-    const { stdout, stderr } = await execFileAsync(spec.command, spec.args, {
+  const commandText = buildCommandText(spec);
+  const startedAt = Date.now();
+
+  return await new Promise<CheckResult>((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    let timedOut = false;
+    let aborted = false;
+    let terminationSignal: string | undefined;
+    let exitCode: number | undefined;
+    let reason: string | undefined;
+
+    const child = spawn(spec.command, spec.args, {
       cwd,
-      timeout: options?.timeoutMs ?? 300000,
-      maxBuffer: 10 * 1024 * 1024
+      detached: process.platform !== "win32",
+      stdio: ["ignore", "pipe", "pipe"]
     });
 
-    return {
-      status: "passed",
-      command: [spec.command, ...spec.args].join(" "),
-      output: [stdout, stderr].filter(Boolean).join("\n")
-    };
-  } catch (error) {
-    const typedError = error as {
-      code?: number | string;
-      stdout?: string;
-      stderr?: string;
-      message?: string;
-      killed?: boolean;
-      signal?: NodeJS.Signals;
-    };
-    const timedOut =
-      typedError.killed === true &&
-      (typedError.signal === "SIGTERM" ||
-        /timed?\s*out|timeout/i.test(typedError.message ?? ""));
+    const timeoutHandle =
+      options?.timeoutMs && options.timeoutMs > 0
+        ? setTimeout(() => {
+            timedOut = true;
+            reason = `Verification command timed out after ${options.timeoutMs}ms`;
+            void killChildProcessTree(child.pid ?? 0);
+          }, options.timeoutMs)
+        : undefined;
 
-    return {
-      status: "failed",
-      command: [spec.command, ...spec.args].join(" "),
-      exitCode:
-        typeof typedError.code === "number"
-          ? typedError.code
-          : undefined,
-      reason: typedError.message ?? "command failed",
-      output: [typedError.stdout, typedError.stderr].filter(Boolean).join("\n"),
-      timedOut
+    const abortListener = () => {
+      aborted = true;
+      reason = `Verification command aborted: ${formatAbortReason(options?.signal?.reason)}`;
+      void killChildProcessTree(child.pid ?? 0);
     };
-  }
+
+    const cleanup = (): void => {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+      options?.signal?.removeEventListener("abort", abortListener);
+    };
+
+    const finalize = (result: CheckResult): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      resolve({
+        ...result,
+        command: commandText,
+        stdout: stdout || undefined,
+        stderr: stderr || undefined,
+        output: [stdout, stderr].filter(Boolean).join("\n") || undefined,
+        elapsedMs: Date.now() - startedAt,
+        exitCode,
+        timedOut: (result.timedOut ?? timedOut) || undefined,
+        aborted: (result.aborted ?? aborted) || undefined,
+        terminationSignal: result.terminationSignal ?? terminationSignal
+      });
+    };
+
+    if (options?.signal?.aborted) {
+      abortListener();
+    } else {
+      options?.signal?.addEventListener("abort", abortListener, { once: true });
+    }
+
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
+      stdout = appendOutput(stdout, chunk);
+    });
+    child.stderr?.on("data", (chunk: string) => {
+      stderr = appendOutput(stderr, chunk);
+    });
+
+    child.once("error", (error) => {
+      reason = error.message || "command failed to start";
+      finalize({
+        status: "failed",
+        reason,
+        failureKind: "verifier_infrastructure_failure"
+      });
+    });
+
+    child.once("close", (code, signal) => {
+      exitCode = typeof code === "number" ? code : undefined;
+      terminationSignal = signal ?? undefined;
+
+      if (timedOut) {
+        finalize({
+          status: "failed",
+          reason,
+          failureKind: "verify_timeout",
+          blockedReason: reason
+        });
+        return;
+      }
+
+      if (aborted) {
+        finalize({
+          status: "failed",
+          reason,
+          failureKind: "verifier_infrastructure_failure",
+          blockedReason: reason
+        });
+        return;
+      }
+
+      if (code === 0) {
+        finalize({
+          status: "passed"
+        });
+        return;
+      }
+
+      finalize({
+        status: "failed",
+        reason:
+          reason ??
+          (signal
+            ? `Verification command exited via signal ${signal}`
+            : `Verification command exited with code ${code ?? "unknown"}`)
+      });
+    });
+  });
 }

@@ -22,6 +22,8 @@ verify:
     - tool_missing
     - artifact_resolution
     - repo_unreachable
+    - verify_timeout
+    - verifier_infrastructure_failure
     - budget_exceeded
   retryOnCachedResolution: true
   maven:
