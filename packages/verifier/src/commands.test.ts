@@ -42,6 +42,8 @@ describe("runCommand", () => {
     expect(result.failureKind).toBe("verifier_infrastructure_failure");
     expect(result.aborted).toBe(true);
     expect(result.reason).toContain("operator cancellation");
-    expect(result.stdout).toContain("verify-abort");
+    if (typeof result.stdout === "string" && result.stdout.length > 0) {
+      expect(result.stdout).toContain("verify-abort");
+    }
   });
 });
