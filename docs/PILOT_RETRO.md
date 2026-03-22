@@ -844,3 +844,90 @@ This section is intentionally pre-execution and contains expected outcomes only.
 - the live Axum run stayed `completed`
 - no duplicate PR was created
 - the Stage 11 summary/evidence fields were present on the no-change path
+
+## Stage 12 Results
+- Stage 12 ops closure ran from isolated worktree baseline `7a197bc` on the host runtime at `http://127.0.0.1:3014` under Java 17.
+- full cohort artifacts:
+  - pilot summary: `/private/tmp/code-porter-stage12-7a197bc/evidence/pilot/2026-03-22T06-32-54-308Z/pilot-summary.json`
+  - coverage summary: `/private/tmp/code-porter-stage12-7a197bc/evidence/pilot/2026-03-22T06-32-54-308Z/coverage-summary.json`
+- report snapshots:
+  - `/tmp/pilot-report-stage12-all.json`
+  - `/tmp/pilot-report-stage12-actionable.json`
+  - `/tmp/pilot-report-stage12-coverage.json`
+
+### Targeted Coverage Validation
+1. `Coreledger-tech/authelia-TOTP`
+- runId: `42c32bde-b277-4049-96c7-af6f66c561c6`
+- status: `needs_review`
+- failureKind: `unsupported_build_system`
+- evidence root: `/private/tmp/code-porter-stage12-7a197bc/evidence/8b710d64-3947-4909-ba59-62e71596f658/4275d06e-6acf-4293-95c8-eb27d62de650/42c32bde-b277-4049-96c7-af6f66c561c6`
+- summary.scan:
+  - `selectedBuildSystem=go`
+  - `buildSystemDisposition=excluded_by_policy`
+  - `unsupportedReason=unsupported_build_system_go`
+  - `recommendedNextLane=go_readiness_lane`
+  - `coverageOutcome=excluded`
+
+2. `Coreledger-tech/Exception-handling-reconciliation`
+- runId: `5e08d4f6-3fe3-4220-baf2-9e2364924804`
+- status: `needs_review`
+- failureKind: `unsupported_build_system`
+- evidence root: `/private/tmp/code-porter-stage12-7a197bc/evidence/ab7bfe38-b41e-4c42-afff-4d7460513f70/5a4a1d6b-8c9b-4829-ad0d-392952c1c15f/5e08d4f6-3fe3-4220-baf2-9e2364924804`
+- summary.scan:
+  - `selectedBuildSystem=unknown`
+  - `buildSystemDisposition=no_supported_manifest`
+  - `unsupportedReason=no_supported_manifest`
+  - `recommendedNextLane=manifest_follow_up`
+  - `coverageOutcome=excluded`
+
+3. `Coreledger-tech/android-ESP-32-bluetooth-arduino`
+- runId: `e694819a-9720-4158-8832-aad6c2fdc3e2`
+- status: `needs_review`
+- failureKind: `guarded_baseline_noop`
+- evidence root: `/private/tmp/code-porter-stage12-7a197bc/evidence/dac27d9d-e896-457b-bd17-807a959eb977/3f95488b-83f8-41f9-9b6d-1d037e8a377f/e694819a-9720-4158-8832-aad6c2fdc3e2`
+- summary.scan:
+  - `selectedBuildSystem=gradle`
+  - `buildSystemDisposition=supported`
+  - `gradleProjectType=android`
+  - `unsupportedReason=null`
+  - `recommendedNextLane=null`
+  - `coverageOutcome=guarded_noop`
+- guarded Android semantics stayed intact: no PR was opened and the explicit no-op path remained measurable.
+
+### Stage 12 Report Snapshots (`window=7d`)
+1. `cohort=all`
+- totalsByStatus: `completed=2`, `needs_review=6`
+- topFailureKinds: `unsupported_build_system=4`, `guarded_baseline_noop=2`
+- `coverageEntries` is populated with repo-level coverage rows
+- `coverageSummary.byOutcome`: `excluded=4`, `guarded_noop=2`
+- `coverageSummary.byReason`: `unsupported_build_system_go=2`, `no_supported_manifest=2`
+- `coverageSummary.byRecommendation`: `go_readiness_lane=2`, `manifest_follow_up=2`
+
+2. `cohort=actionable_maven`
+- totalsByStatus: `completed=2`
+- topFailureKinds: none
+- `coverageEntries` is intentionally empty
+- actionable Maven remained backward-compatible and stable while coverage reporting expanded separately.
+
+3. `cohort=coverage`
+- totalsByStatus: `needs_review=6`
+- topFailureKinds: `unsupported_build_system=4`, `guarded_baseline_noop=2`
+- repo-level `coverageEntries` now show:
+  - the excluded repo
+  - the precise `unsupportedReason`
+  - the deterministic `recommendedNextLane`
+  - the normalized `coverageOutcome`
+
+### Stage 12 Delta
+1. Coverage reporting is now operationally useful instead of just exclusion-heavy.
+- the coverage cohort now explains why each excluded repo missed the current lanes
+- the same report also tells us what lane should come next, for example `go_readiness_lane` and `manifest_follow_up`
+
+2. Unsupported-slice precision improved without changing terminal statuses.
+- Go repos no longer collapse into a generic unsupported bucket internally
+- no-manifest repos now surface `no_supported_manifest` directly
+- Android guarded no-op runs stay distinct from unsupported repos
+
+3. Pilot artifacts now include a dedicated coverage snapshot.
+- `coverage-summary.json` was written alongside `pilot-summary.json`
+- the coverage artifact mirrors the API payload and adds deterministic totals that are ready for future Stage 13 lane planning
